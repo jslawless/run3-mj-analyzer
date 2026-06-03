@@ -36,6 +36,7 @@ Usage:
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -45,18 +46,25 @@ DEFAULT_REDIRECTOR = "root://cmseos.fnal.gov/"
 
 
 def eos_ls(path, ls_cmd):
-    """Return the entry names under an EOS directory via `ls_cmd` (e.g. eosls)."""
+    """Return the entry names under an EOS directory by running `ls_cmd <path>`.
+
+    `ls_cmd` may be a multi-word command (e.g. 'eos root://cmseos.fnal.gov ls');
+    it is tokenized and the path appended. Note the interactive `eosls` is
+    usually a shell *function* wrapping `eos ... ls`, which cannot be invoked
+    from a subprocess -- so we call the `eos` binary directly.
+    """
+    cmd = shlex.split(ls_cmd) + [path]
     try:
-        proc = subprocess.run(
-            [ls_cmd, path], check=True, capture_output=True, text=True
-        )
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
     except FileNotFoundError:
         sys.exit(
-            f"'{ls_cmd}' not found on PATH. Run this where the EOS client is "
-            "available (e.g. cmslpc), or pass --ls-cmd."
+            f"'{cmd[0]}' not found on PATH. ('eosls' is often a shell function "
+            "wrapping 'eos root://cmseos.fnal.gov ls' and can't be called from a "
+            "script.) Run where the EOS client is available (e.g. cmslpc), or "
+            "pass --ls-cmd."
         )
     except subprocess.CalledProcessError as e:
-        sys.exit(f"`{ls_cmd} {path}` failed:\n{e.stderr.strip()}")
+        sys.exit(f"`{' '.join(cmd)}` failed:\n{e.stderr.strip()}")
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
@@ -106,8 +114,10 @@ def main():
              "tree is 'events').",
     )
     parser.add_argument(
-        "--ls-cmd", default="eosls",
-        help="Command used to list an EOS directory.",
+        "--ls-cmd", default="eos root://cmseos.fnal.gov ls",
+        help="Command used to list an EOS directory (the path is appended). "
+             "Defaults to the 'eos' binary, since the interactive 'eosls' is a "
+             "shell function that scripts can't call.",
     )
     args = parser.parse_args()
 
