@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "run3-mj-analyzer"
+version = "0.1.0"
+description = "Analysis of run3-mj-slimmer / run3-mj-evaluator output (coffea + hist)."
+requires-python = ">=3.10"
+dependencies = [
+    "uproot>=5.0",
+    "awkward>=2.0",
+    "numpy>=1.20",
+    "fsspec_xrootd",
+    "coffea>=2024.0",
+    "hist",
+    "vector",
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
