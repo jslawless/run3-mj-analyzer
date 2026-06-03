@@ -69,11 +69,17 @@ def eos_ls(path, ls_cmd):
 
 
 def to_xrd(eos_dir, fname, redirector):
-    """Prefix a /store path with the XRootD redirector for WAN streaming."""
+    """Prefix a /store path with the XRootD redirector for WAN streaming.
+
+    XRootD needs a DOUBLE slash between the host and an absolute path:
+    'root://host//store/...'. A single slash makes 'store/...' a relative path,
+    which the server rejects ('Locating relative path ... is disallowed').
+    """
     full = f"{eos_dir.rstrip('/')}/{fname}"
     if full.startswith("root://"):
         return full
-    return redirector.rstrip("/") + "/" + full.lstrip("/")
+    host = redirector.rstrip("/")          # e.g. root://cmseos.fnal.gov
+    return f"{host}//{full.lstrip('/')}"   # -> root://cmseos.fnal.gov//store/...
 
 
 def discover_datasets(eos_path, ls_cmd):
