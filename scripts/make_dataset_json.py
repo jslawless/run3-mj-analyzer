@@ -36,6 +36,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -43,6 +44,17 @@ import sys
 # Slimmer/evaluator outputs live on personal/group EOS and must be streamed
 # through the EOS redirector (XCache only serves the global CMS namespace).
 DEFAULT_REDIRECTOR = "root://cmseos.fnal.gov/"
+
+
+def _natural_key(name):
+    """Sort key that orders embedded numbers numerically, so HT-binned slice
+    names sort by HT (HT-100to200 < HT-200to400 < ... < HT-1000to1200 < HT-2000)
+    instead of lexically (which would put HT-1000to1200 before HT-100to200).
+    Each token is tagged by type so digit and non-digit positions never compare
+    across types.
+    """
+    return [(0, int(tok)) if tok.isdigit() else (1, tok)
+            for tok in re.split(r"(\d+)", name)]
 
 
 def eos_ls(path, ls_cmd):
@@ -140,7 +152,7 @@ def main():
     }
 
     total = 0
-    for name, dsdir in sorted(datasets.items()):
+    for name, dsdir in sorted(datasets.items(), key=lambda kv: _natural_key(kv[0])):
         files = [
             to_xrd(dsdir, f, args.redirector)
             for f in eos_ls(dsdir, args.ls_cmd)
