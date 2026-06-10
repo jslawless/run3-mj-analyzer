@@ -19,6 +19,12 @@ Two input modes:
     the slice's cutflow[0] sum computed by run3_mj_analyzer.load_fileset.
     Pass ``--unweighted`` to skip the weighting (e.g. a ttbar dataset JSON).
 
+In every mode the output file also gets an ``n_original`` TObjString: a JSON
+map of ``{dataset: cutflow[0] sum}`` so the xsec weight ``lumi * xs_pb / N``
+can be computed later from the histogram file alone (essential for unweighted
+fills). A dataset whose files lack a ``cutflow`` histogram is recorded as
+``null`` rather than with a biased partial sum.
+
 Adding histograms: add an entry to ``histogram_defs()`` below. A ``per_model``
 definition is instantiated once per discovered candidate collection; a
 non-per-model one (event-level quantities) is filled once per chunk - list any
@@ -119,10 +125,13 @@ class HistogramBook:
                 values = ak.to_numpy(hdef.values(events, model))
                 h.fill(values, weight=weight)
 
-    def write(self, path):
+    def write(self, path, strings=None):
+        """Write all histograms, plus any ``strings`` entries as TObjStrings."""
         with uproot.recreate(path) as f:
             for key in sorted(self.hists):
                 f[f"h_{key}"] = self.hists[key]
+            for key, value in (strings or {}).items():
+                f[key] = value
 
 
 def discover_models(tree):
@@ -133,7 +142,14 @@ def discover_models(tree):
 
 
 def resolve_jobs(args):
-    """Flatten the inputs into ``[(path, tree, weight, dataset), ...]``."""
+    """Flatten the inputs into ``([(path, tree, weight, dataset), ...], n_original)``.
+
+    ``n_original`` maps dataset -> summed cutflow[0]. In weighted dataset-JSON
+    mode the values come from load_fileset's inspection pass (which also counts
+    cutflow-only files that never make it into the job list); in the other
+    modes they are ``None``, meaning the main loop accumulates them from each
+    file's ``cutflow`` as it is processed.
+    """
     json_inputs = [p for p in args.inputs if p.endswith(".json")]
     root_inputs = [p for p in args.inputs if not p.endswith(".json")]
     if json_inputs and root_inputs:
@@ -143,7 +159,8 @@ def resolve_jobs(args):
 
     if not json_inputs:
         tree = args.tree or "events"
-        return [(path, tree, 1.0, Path(path).stem) for path in root_inputs]
+        jobs = [(path, tree, 1.0, Path(path).stem) for path in root_inputs]
+        return jobs, {Path(path).stem: None for path in root_inputs}
 
     if args.unweighted:
         # No n_original needed, so skip the per-file inspection pass entirely;
@@ -181,11 +198,14 @@ def resolve_jobs(args):
         }
 
     jobs = []
+    n_original = {
+        name: ds["metadata"].get("n_original") for name, ds in fileset.items()
+    }
     for name, ds in fileset.items():
         print(f"[{name}] {len(ds['files'])} file(s), weight {weights[name]:.4g}")
         for path, tree in ds["files"].items():
             jobs.append((path, tree, weights[name], name))
-    return jobs
+    return jobs, n_original
 
 
 def main():
@@ -228,7 +248,12 @@ def main():
     args = parser.parse_args()
     use_bars = tqdm is not None and not args.no_progress
 
-    jobs = resolve_jobs(args)
+    jobs, n_original = resolve_jobs(args)
+    # Datasets whose n_original wasn't known up front (no weighted inspection
+    # pass) get it summed from each file's cutflow[0] as the file is read.
+    accumulate = {name for name, n in n_original.items() if n is None}
+    for name in accumulate:
+        n_original[name] = 0.0
     defs = histogram_defs(args)
     book = HistogramBook(defs)
     print(
@@ -245,6 +270,15 @@ def main():
     for path, tree_name, weight, dataset in file_bar:
         t_file = time.monotonic()
         with uproot.open(path) as f:
+            if dataset in accumulate and n_original[dataset] is not None:
+                if "cutflow" in f:
+                    n_original[dataset] += float(f["cutflow"].values()[0])
+                else:
+                    echo(
+                        f"[warn] {path}: no 'cutflow' histogram - n_original "
+                        f"for '{dataset}' will be recorded as null"
+                    )
+                    n_original[dataset] = None
             if tree_name not in f:
                 echo(f"[skip] {path}: no '{tree_name}' tree")
                 n_skipped += 1
@@ -303,17 +337,21 @@ def main():
     )
     print(f"models: {sorted(all_models)}")
 
-    print(f"\n{'dataset':<58} {'files':>5} {'events':>12} {'weight':>10}")
+    print(f"\n{'dataset':<58} {'files':>5} {'events':>12} {'weight':>10} "
+          f"{'n_original':>12}")
     for name, (n_files, n_evts, weight) in per_dataset.items():
-        print(f"{name[:58]:<58} {n_files:>5} {n_evts:>12,} {weight:>10.4g}")
+        n_orig = n_original.get(name)
+        n_orig_s = f"{n_orig:,.0f}" if n_orig is not None else "null"
+        print(f"{name[:58]:<58} {n_files:>5} {n_evts:>12,} {weight:>10.4g} "
+              f"{n_orig_s:>12}")
 
     print("\nhistograms (in-range weighted entries):")
     for key in sorted(book.hists):
         h = book.hists[key]
         print(f"  h_{key}: {h.sum().value:.6g}")
 
-    book.write(args.output)
-    print(f"\nhistograms written to {args.output}")
+    book.write(args.output, strings={"n_original": json.dumps(n_original)})
+    print(f"\nhistograms + n_original written to {args.output}")
 
 
 if __name__ == "__main__":
