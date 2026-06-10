@@ -16,6 +16,7 @@ dependencies = [
     "hist",
     "vector",
     "matplotlib",
+    "tqdm",
 ]
 
 [tool.setuptools.packages.find]

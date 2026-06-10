@@ -33,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,19 @@ import awkward as ak
 import hist
 import numpy as np
 import uproot
+
+try:
+    from tqdm import tqdm
+except ImportError:  # progress bars are cosmetic - everything runs without them
+    tqdm = None
+
+
+def echo(msg):
+    """print() that doesn't tear through active tqdm bars."""
+    if tqdm is not None:
+        tqdm.write(msg)
+    else:
+        print(msg)
 
 # Make the package importable without `pip install -e .` (src/ layout).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -192,13 +206,26 @@ def main():
                         help="uproot.iterate chunk size (default: %(default)s)")
     args = parser.parse_args()
 
-    book = HistogramBook(histogram_defs(args))
-    all_models, n_events = set(), 0
+    jobs = resolve_jobs(args)
+    defs = histogram_defs(args)
+    book = HistogramBook(defs)
+    print(
+        f"\n{len(jobs)} file(s) to process | histograms: {sorted(defs)} "
+        f"(bins={args.bins}, range={args.range[0]:g}-{args.range[1]:g}) | "
+        f"output: {args.output}"
+    )
 
-    for path, tree_name, weight, dataset in resolve_jobs(args):
+    all_models, n_events, n_skipped = set(), 0, 0
+    per_dataset = {}  # dataset -> [n_files, n_events, weight]
+    t0 = time.monotonic()
+
+    file_bar = tqdm(jobs, unit="file", desc="files") if tqdm else jobs
+    for path, tree_name, weight, dataset in file_bar:
+        t_file = time.monotonic()
         with uproot.open(path) as f:
             if tree_name not in f:
-                print(f"[skip] {path}: no '{tree_name}' tree")
+                echo(f"[skip] {path}: no '{tree_name}' tree")
+                n_skipped += 1
                 continue
             tree = f[tree_name]
             models = discover_models(tree)
@@ -207,25 +234,64 @@ def main():
                     f"{path} has no <Model>Candidate_mass branches - "
                     "is this evaluator output?"
                 )
-            all_models.update(models)
+            new_models = set(models) - all_models
+            if new_models:
+                echo(f"[models] found {sorted(new_models)} in {Path(path).name}")
+                all_models.update(new_models)
             branches = [f"{m}Candidate_*" for m in models] + EXTRA_BRANCHES
+            event_bar = (
+                tqdm(total=tree.num_entries, unit="evt", leave=False,
+                     desc=Path(path).name[:48])
+                if tqdm else None
+            )
+            n_file = 0
             for events in tree.iterate(
                 filter_name=branches, step_size=args.step_size
             ):
                 book.fill(events, models, weight)
-                n_events += len(events)
-        print(f"[done] {dataset}: {path}")
+                n_file += len(events)
+                if event_bar is not None:
+                    event_bar.update(len(events))
+            if event_bar is not None:
+                event_bar.close()
+        stats = per_dataset.setdefault(dataset, [0, 0, weight])
+        stats[0] += 1
+        stats[1] += n_file
+        n_events += n_file
+        dt_file = time.monotonic() - t_file
+        per_event = 1e6 * dt_file / n_file if n_file else 0.0
+        echo(
+            f"[done] {dataset}: {Path(path).name} - "
+            f"{n_file:,} events in {dt_file:.1f} s "
+            f"({per_event:.1f} us/evt) ({n_events:,} total)"
+        )
+    if tqdm is not None:
+        file_bar.close()
 
     if not book.hists:
         raise SystemExit("No histograms filled - no usable input files?")
 
-    print(f"\n{n_events} events read | models: {sorted(all_models)}")
+    elapsed = time.monotonic() - t0
+    rate = n_events / elapsed if elapsed > 0 else 0.0
+    per_event = 1e6 * elapsed / n_events if n_events else 0.0
+    print(
+        f"\n{n_events:,} events from {len(jobs) - n_skipped} file(s) in "
+        f"{elapsed:.1f} s ({rate:,.0f} ev/s, {per_event:.1f} us/evt)"
+        + (f" | {n_skipped} skipped" if n_skipped else "")
+    )
+    print(f"models: {sorted(all_models)}")
+
+    print(f"\n{'dataset':<58} {'files':>5} {'events':>12} {'weight':>10}")
+    for name, (n_files, n_evts, weight) in per_dataset.items():
+        print(f"{name[:58]:<58} {n_files:>5} {n_evts:>12,} {weight:>10.4g}")
+
+    print("\nhistograms (in-range weighted entries):")
     for key in sorted(book.hists):
         h = book.hists[key]
-        print(f"  h_{key}: {h.sum().value:.6g} weighted entries")
+        print(f"  h_{key}: {h.sum().value:.6g}")
 
     book.write(args.output)
-    print(f"histograms written to {args.output}")
+    print(f"\nhistograms written to {args.output}")
 
 
 if __name__ == "__main__":
