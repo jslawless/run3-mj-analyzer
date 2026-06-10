@@ -24,6 +24,7 @@ Example:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,19 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+try:
+    from tqdm import tqdm
+except ImportError:  # progress bars are cosmetic - everything runs without them
+    tqdm = None
+
+
+def echo(msg):
+    """print() that doesn't tear through active tqdm bars."""
+    if tqdm is not None:
+        tqdm.write(msg)
+    else:
+        print(msg)
 
 # Make the package importable without `pip install -e .` (src/ layout).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -87,9 +101,11 @@ def resolve_inputs(inputs, tree):
     """Flatten the inputs into ``[(path, tree_name), ...]``.
 
     Accepts either evaluated ROOT files directly or a single dataset JSON from
-    scripts/make_dataset_json.py (resolved via load_fileset, which also drops
-    files whose events tree is empty). The spectra are filled unweighted either
-    way - this is a shape comparison within one sample.
+    scripts/make_dataset_json.py. The spectra are filled unweighted either way
+    (this is a shape comparison within one sample), so no n_original is needed
+    and the JSON is taken at face value (``skip_missing_tree=False``) - no
+    up-front open of every file. Files without an events tree are skipped
+    during processing instead.
     """
     json_inputs = [p for p in inputs if p.endswith(".json")]
     root_inputs = [p for p in inputs if not p.endswith(".json")]
@@ -98,7 +114,7 @@ def resolve_inputs(inputs, tree):
     if len(json_inputs) > 1:
         raise SystemExit("Pass at most one dataset JSON.")
     if json_inputs:
-        fileset = load_fileset(json_inputs[0], tree=tree)
+        fileset = load_fileset(json_inputs[0], tree=tree, skip_missing_tree=False)
         return [
             (path, tree_name)
             for ds in fileset.values()
@@ -136,7 +152,11 @@ def main():
                         help="jet preselection |eta| (default: %(default)s)")
     parser.add_argument("--step-size", default="500 MB",
                         help="uproot.iterate chunk size (default: %(default)s)")
+    parser.add_argument("--no-progress", action="store_true",
+                        help="suppress tqdm progress bars (e.g. when output is "
+                        "redirected to a log file)")
     args = parser.parse_args()
+    use_bars = tqdm is not None and not args.no_progress
 
     match_kwargs = dict(
         dr_max=args.dr_max,
@@ -144,14 +164,27 @@ def main():
         jet_abseta_max=args.jet_abseta_max,
     )
 
+    jobs = resolve_inputs(args.inputs, args.tree)
+    print(
+        f"\n{len(jobs)} file(s) to process | bins={args.bins}, "
+        f"range={args.range[0]:g}-{args.range[1]:g} | match: dR<{args.dr_max:g}, "
+        f"pT>{args.jet_pt_min:g}, |eta|<{args.jet_abseta_max:g} | "
+        f"output: {args.output}"
+    )
+
     h_jec = make_hist(args.bins, *args.range)
     h_raw = make_hist(args.bins, *args.range)
-    n_events = 0
+    n_events = n_skipped = 0
+    t0 = time.monotonic()
 
-    for path, tree_name in resolve_inputs(args.inputs, args.tree):
+    file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
+    for path, tree_name in file_bar:
+        t_file = time.monotonic()
+        n_file = n_jec_file = n_raw_file = 0
         with uproot.open(path) as f:
             if tree_name not in f:
-                print(f"[skip] {path}: no '{tree_name}' tree")
+                echo(f"[skip] {path}: no '{tree_name}' tree")
+                n_skipped += 1
                 continue
             tree = f[tree_name]
             missing = [b for b in BRANCHES if b not in tree]
@@ -160,20 +193,49 @@ def main():
                     f"{path} is missing branches {missing} - this script needs "
                     "evaluator output (JEC-corrected + raw jets and GenPart truth)."
                 )
+            event_bar = (
+                tqdm(total=tree.num_entries, unit="evt", leave=False,
+                     desc=Path(path).name[:48])
+                if use_bars else None
+            )
             for events in tree.iterate(BRANCHES, step_size=args.step_size):
-                n_events += len(events)
-                h_jec.fill(
-                    trijet_masses(events, "ScoutingPFJet_pt", "ScoutingPFJet_m",
-                                  **match_kwargs)
+                n_file += len(events)
+                masses_jec = trijet_masses(
+                    events, "ScoutingPFJet_pt", "ScoutingPFJet_m", **match_kwargs
                 )
-                h_raw.fill(
-                    trijet_masses(events, "ScoutingPFJet_pt_raw",
-                                  "ScoutingPFJet_m_raw", **match_kwargs)
+                masses_raw = trijet_masses(
+                    events, "ScoutingPFJet_pt_raw", "ScoutingPFJet_m_raw",
+                    **match_kwargs
                 )
-        print(f"[done] {path}")
+                h_jec.fill(masses_jec)
+                h_raw.fill(masses_raw)
+                n_jec_file += len(masses_jec)
+                n_raw_file += len(masses_raw)
+                if event_bar is not None:
+                    event_bar.update(len(events))
+            if event_bar is not None:
+                event_bar.close()
+        n_events += n_file
+        dt_file = time.monotonic() - t_file
+        per_event = 1e6 * dt_file / n_file if n_file else 0.0
+        echo(
+            f"[done] {Path(path).name} - {n_file:,} events in {dt_file:.1f} s "
+            f"({per_event:.1f} us/evt), top candidates: jec {n_jec_file:,} / "
+            f"raw {n_raw_file:,} ({n_events:,} events total)"
+        )
+    if use_bars:
+        file_bar.close()
 
+    elapsed = time.monotonic() - t0
+    rate = n_events / elapsed if elapsed > 0 else 0.0
+    per_event = 1e6 * elapsed / n_events if n_events else 0.0
     print(
-        f"\n{n_events} events read | truth-matched top candidates: "
+        f"\n{n_events:,} events from {len(jobs) - n_skipped} file(s) in "
+        f"{elapsed:.1f} s ({rate:,.0f} ev/s, {per_event:.1f} us/evt)"
+        + (f" | {n_skipped} skipped" if n_skipped else "")
+    )
+    print(
+        f"truth-matched top candidates: "
         f"jec {int(h_jec.sum())} (mean {hist_mean(h_jec):.1f} GeV), "
         f"raw {int(h_raw.sum())} (mean {hist_mean(h_raw):.1f} GeV)"
     )

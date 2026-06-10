@@ -145,13 +145,28 @@ def resolve_jobs(args):
         tree = args.tree or "events"
         return [(path, tree, 1.0, Path(path).stem) for path in root_inputs]
 
-    # Dataset JSON: load_fileset drops tree-less files (nothing passed the
-    # slimmer) while still counting them toward n_original.
-    fileset = load_fileset(json_inputs[0], tree=args.tree)
-
     if args.unweighted:
+        # No n_original needed, so skip the per-file inspection pass entirely;
+        # files without an events tree are caught by the [skip] in the main
+        # loop instead.
+        fileset = load_fileset(json_inputs[0], tree=args.tree,
+                               skip_missing_tree=False)
         weights = {name: 1.0 for name in fileset}
     else:
+        # The xsec weights need n_original from every file's cutflow, so each
+        # file is opened once up front. Over xrootd this is latency-bound -
+        # hence the thread pool - but on thousands of files it still takes a
+        # while; the progress bar is there so it doesn't look hung.
+        print(
+            f"inspecting files in {json_inputs[0]} for events trees + "
+            f"cutflow n_original ({args.inspect_workers} threads)...",
+            flush=True,
+        )
+        fileset = load_fileset(
+            json_inputs[0], tree=args.tree,
+            workers=args.inspect_workers,
+            progress=not args.no_progress,
+        )
         with open(args.xs_json) as f:
             xs = json.load(f)
         missing = [name for name in fileset if name not in xs]
@@ -204,7 +219,14 @@ def main():
                         "xsec weights")
     parser.add_argument("--step-size", default="500 MB",
                         help="uproot.iterate chunk size (default: %(default)s)")
+    parser.add_argument("--no-progress", action="store_true",
+                        help="suppress tqdm progress bars (e.g. when output is "
+                        "redirected to a log file)")
+    parser.add_argument("--inspect-workers", type=int, default=16,
+                        help="threads for the up-front per-file tree/cutflow "
+                        "inspection in dataset-JSON mode (default: %(default)s)")
     args = parser.parse_args()
+    use_bars = tqdm is not None and not args.no_progress
 
     jobs = resolve_jobs(args)
     defs = histogram_defs(args)
@@ -219,7 +241,7 @@ def main():
     per_dataset = {}  # dataset -> [n_files, n_events, weight]
     t0 = time.monotonic()
 
-    file_bar = tqdm(jobs, unit="file", desc="files") if tqdm else jobs
+    file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
     for path, tree_name, weight, dataset in file_bar:
         t_file = time.monotonic()
         with uproot.open(path) as f:
@@ -242,7 +264,7 @@ def main():
             event_bar = (
                 tqdm(total=tree.num_entries, unit="evt", leave=False,
                      desc=Path(path).name[:48])
-                if tqdm else None
+                if use_bars else None
             )
             n_file = 0
             for events in tree.iterate(
@@ -265,7 +287,7 @@ def main():
             f"{n_file:,} events in {dt_file:.1f} s "
             f"({per_event:.1f} us/evt) ({n_events:,} total)"
         )
-    if tqdm is not None:
+    if use_bars:
         file_bar.close()
 
     if not book.hists:
