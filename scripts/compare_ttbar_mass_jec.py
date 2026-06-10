@@ -19,6 +19,7 @@ file, with an overlay PNG saved next to it.
 
 Example:
     python scripts/compare_ttbar_mass_jec.py evaluated_TTto4Q_*.root -o ttbar_mtt_jec.root
+    python scripts/compare_ttbar_mass_jec.py ttbar_dataset.json -o ttbar_mtt_jec.root
 """
 
 import argparse
@@ -37,6 +38,7 @@ import matplotlib.pyplot as plt
 # Make the package importable without `pip install -e .` (src/ layout).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from run3_mj_analyzer.fileset import load_fileset
 from run3_mj_analyzer.truth_matching import truth_matched_trijets
 
 # Everything the matcher needs, both JEC variants included. Files missing any
@@ -82,17 +84,44 @@ def hist_mean(h):
     return float(np.average(h.axes[0].centers, weights=values))
 
 
+def resolve_inputs(inputs, tree):
+    """Flatten the inputs into ``[(path, tree_name), ...]``.
+
+    Accepts either evaluated ROOT files directly or a single dataset JSON from
+    scripts/make_dataset_json.py (resolved via load_fileset, which also drops
+    files whose events tree is empty). The spectra are filled unweighted either
+    way - this is a shape comparison within one sample.
+    """
+    json_inputs = [p for p in inputs if p.endswith(".json")]
+    root_inputs = [p for p in inputs if not p.endswith(".json")]
+    if json_inputs and root_inputs:
+        raise SystemExit("Pass either ROOT files or one dataset JSON, not both.")
+    if len(json_inputs) > 1:
+        raise SystemExit("Pass at most one dataset JSON.")
+    if json_inputs:
+        fileset = load_fileset(json_inputs[0], tree=tree)
+        return [
+            (path, tree_name)
+            for ds in fileset.values()
+            for path, tree_name in ds["files"].items()
+        ]
+    return [(path, tree or "events") for path in root_inputs]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Truth-matched m(ttbar) spectrum before (raw) and after (jec) "
         "jet energy corrections, written as TH1D to a ROOT file."
     )
-    parser.add_argument("inputs", nargs="+", help="evaluator output ROOT file(s)")
+    parser.add_argument("inputs", nargs="+",
+                        help="evaluator output ROOT file(s), or one dataset JSON "
+                        "from scripts/make_dataset_json.py")
     parser.add_argument("-o", "--output", default="ttbar_mtt_jec.root",
                         help="output ROOT file (default: %(default)s); the overlay "
                         "PNG is saved next to it")
-    parser.add_argument("--tree", default="events",
-                        help="events tree name (default: %(default)s)")
+    parser.add_argument("--tree", default=None,
+                        help="events tree name (default: 'events', or the "
+                        "dataset JSON's metadata)")
     parser.add_argument("--bins", type=int, default=100,
                         help="histogram bins (default: %(default)s)")
     parser.add_argument("--range", type=float, nargs=2, default=(0.0, 2000.0),
@@ -119,12 +148,12 @@ def main():
     h_raw = make_hist(args.bins, *args.range)
     n_events = 0
 
-    for path in args.inputs:
+    for path, tree_name in resolve_inputs(args.inputs, args.tree):
         with uproot.open(path) as f:
-            if args.tree not in f:
-                print(f"[skip] {path}: no '{args.tree}' tree")
+            if tree_name not in f:
+                print(f"[skip] {path}: no '{tree_name}' tree")
                 continue
-            tree = f[args.tree]
+            tree = f[tree_name]
             missing = [b for b in BRANCHES if b not in tree]
             if missing:
                 raise SystemExit(
