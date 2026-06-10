@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""compare_ttbar_mass_jec.py - truth-matched m(ttbar) spectrum, pre- vs post-JEC.
+"""compare_ttbar_mass_jec.py - truth-matched top-candidate mass, pre- vs post-JEC.
 
 Runs run3_mj_analyzer.truth_matching twice per event chunk on evaluator output
 (which carries both the JEC-corrected ``ScoutingPFJet_pt`` / ``_m`` and the
@@ -8,18 +8,18 @@ uncorrected ``ScoutingPFJet_pt_raw`` / ``_m_raw``):
   * "jec": jet four-vectors from ``ScoutingPFJet_pt``     / ``ScoutingPFJet_m``
   * "raw": jet four-vectors from ``ScoutingPFJet_pt_raw`` / ``ScoutingPFJet_m_raw``
 
-For each variant, events where BOTH tops are truth-matched (exactly two
-tri-jets) enter the spectrum, and m(ttbar) is the invariant mass of the sum of
-the two tri-jet four-vectors. Note the selections are independent: the jet
-preselection pT cut acts on each variant's own pT, so an event can pass in one
-variant and not the other.
+For each variant, every truth-matched tri-jet (0-2 per event, each one a
+reconstructed top candidate) enters the spectrum with its own invariant mass;
+no requirement is placed on the other top. Note the selections are
+independent: the jet preselection pT cut acts on each variant's own pT, so a
+tri-jet can be matched in one variant and not the other.
 
-The two spectra are written as TH1D (``h_mtt_jec``, ``h_mtt_raw``) to a ROOT
+The two spectra are written as TH1D (``h_mtop_jec``, ``h_mtop_raw``) to a ROOT
 file, with an overlay PNG saved next to it.
 
 Example:
-    python scripts/compare_ttbar_mass_jec.py evaluated_TTto4Q_*.root -o ttbar_mtt_jec.root
-    python scripts/compare_ttbar_mass_jec.py ttbar_dataset.json -o ttbar_mtt_jec.root
+    python scripts/compare_ttbar_mass_jec.py evaluated_TTto4Q_*.root -o ttbar_mtop_jec.root
+    python scripts/compare_ttbar_mass_jec.py ttbar_dataset.json -o ttbar_mtop_jec.root
 """
 
 import argparse
@@ -61,18 +61,17 @@ BRANCHES = [
 ]
 
 
-def pair_masses(events, pt_branch, m_branch, **match_kwargs):
-    """m(ttbar) for events whose two tops are both truth-matched (numpy array)."""
+def trijet_masses(events, pt_branch, m_branch, **match_kwargs):
+    """Masses of all truth-matched tri-jets (top candidates), flattened."""
     trijets = truth_matched_trijets(
         events, jet_pt_branch=pt_branch, jet_m_branch=m_branch, **match_kwargs
     )
-    both = trijets[ak.num(trijets, axis=1) == 2]
-    return ak.to_numpy((both[:, 0] + both[:, 1]).mass)
+    return ak.to_numpy(ak.flatten(trijets.mass, axis=1))
 
 
 def make_hist(bins, lo, hi):
     return hist.Hist.new.Reg(
-        bins, lo, hi, name="mtt", label=r"$m_{t\bar{t}}$ [GeV]"
+        bins, lo, hi, name="mtop", label=r"$m_{\mathrm{top}}$ [GeV]"
     ).Double()
 
 
@@ -110,13 +109,14 @@ def resolve_inputs(inputs, tree):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Truth-matched m(ttbar) spectrum before (raw) and after (jec) "
-        "jet energy corrections, written as TH1D to a ROOT file."
+        description="Truth-matched top-candidate (tri-jet) mass spectrum before "
+        "(raw) and after (jec) jet energy corrections, written as TH1D to a "
+        "ROOT file."
     )
     parser.add_argument("inputs", nargs="+",
                         help="evaluator output ROOT file(s), or one dataset JSON "
                         "from scripts/make_dataset_json.py")
-    parser.add_argument("-o", "--output", default="ttbar_mtt_jec.root",
+    parser.add_argument("-o", "--output", default="ttbar_mtop_jec.root",
                         help="output ROOT file (default: %(default)s); the overlay "
                         "PNG is saved next to it")
     parser.add_argument("--tree", default=None,
@@ -124,9 +124,9 @@ def main():
                         "dataset JSON's metadata)")
     parser.add_argument("--bins", type=int, default=100,
                         help="histogram bins (default: %(default)s)")
-    parser.add_argument("--range", type=float, nargs=2, default=(0.0, 2000.0),
+    parser.add_argument("--range", type=float, nargs=2, default=(0.0, 500.0),
                         metavar=("LO", "HI"),
-                        help="histogram range in GeV (default: 0 2000)")
+                        help="histogram range in GeV (default: 0 500)")
     parser.add_argument("--dr-max", type=float, default=0.4,
                         help="jet-parton match dR (default: %(default)s)")
     parser.add_argument("--jet-pt-min", type=float, default=30.0,
@@ -163,37 +163,39 @@ def main():
             for events in tree.iterate(BRANCHES, step_size=args.step_size):
                 n_events += len(events)
                 h_jec.fill(
-                    pair_masses(events, "ScoutingPFJet_pt", "ScoutingPFJet_m",
-                                **match_kwargs)
+                    trijet_masses(events, "ScoutingPFJet_pt", "ScoutingPFJet_m",
+                                  **match_kwargs)
                 )
                 h_raw.fill(
-                    pair_masses(events, "ScoutingPFJet_pt_raw", "ScoutingPFJet_m_raw",
-                                **match_kwargs)
+                    trijet_masses(events, "ScoutingPFJet_pt_raw",
+                                  "ScoutingPFJet_m_raw", **match_kwargs)
                 )
         print(f"[done] {path}")
 
     print(
-        f"\n{n_events} events read | truth-matched ttbar pairs: "
+        f"\n{n_events} events read | truth-matched top candidates: "
         f"jec {int(h_jec.sum())} (mean {hist_mean(h_jec):.1f} GeV), "
         f"raw {int(h_raw.sum())} (mean {hist_mean(h_raw):.1f} GeV)"
     )
     if n_events and not h_jec.sum():
-        print("warning: no truth-matched pairs - is this a ttbar sample?")
+        print("warning: no truth-matched tri-jets - is this a ttbar sample?")
 
     with uproot.recreate(args.output) as fout:
-        fout["h_mtt_jec"] = h_jec
-        fout["h_mtt_raw"] = h_raw
+        fout["h_mtop_jec"] = h_jec
+        fout["h_mtop_raw"] = h_raw
     print(f"histograms written to {args.output}")
 
     fig, ax = plt.subplots(figsize=(8, 5))
     edges = h_jec.axes[0].edges
     ax.stairs(h_raw.values(), edges,
-              label=f"raw (no JEC), {int(h_raw.sum())} pairs", color="tab:red")
+              label=f"raw (no JEC), {int(h_raw.sum())} top candidates",
+              color="tab:red")
     ax.stairs(h_jec.values(), edges,
-              label=f"JEC, {int(h_jec.sum())} pairs", color="tab:blue")
-    ax.set_xlabel(r"$m_{t\bar{t}}$ [GeV]")
-    ax.set_ylabel("events")
-    ax.set_title("Truth-matched ttbar invariant mass")
+              label=f"JEC, {int(h_jec.sum())} top candidates",
+              color="tab:blue")
+    ax.set_xlabel(r"$m_{\mathrm{top}}$ [GeV]")
+    ax.set_ylabel("top candidates")
+    ax.set_title("Truth-matched top-candidate (tri-jet) invariant mass")
     ax.legend()
     png = Path(args.output).with_suffix(".png")
     fig.savefig(png, dpi=150, bbox_inches="tight")
