@@ -73,7 +73,7 @@ CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
 
 # Event-level branches read in addition to the candidate collections. Extend
 # this when a future (non-per-model) histogram def needs them.
-EXTRA_BRANCHES = []
+EXTRA_BRANCHES = ["HT", "ScoutingPFJet_pt"]
 
 # Cross sections live in the shared aux repo, assumed checked out next to
 # run3-mj-analyzer (same convention as the notebooks).
@@ -102,6 +102,22 @@ def histogram_defs(args):
             values=lambda events, model: ak.flatten(
                 events[f"{model}Candidate_mass"], axis=1
             ),
+        ),
+        "ht": HistDef(
+            axis=hist.axis.Regular(150, 0.0, 3000.0, name="ht",
+                                   label="H_{T} [GeV]"),
+            values=lambda events, model: events["HT"],
+            per_model=False,
+        ),
+        "leadjet_pt": HistDef(
+            axis=hist.axis.Regular(100, 0.0, 2000.0, name="pt",
+                                   label="leading jet p_{T} [GeV]"),
+            # Corrected pt is not guaranteed sorted (JES applied after the
+            # NanoAOD raw-pt ordering), so take the max, not the first jet.
+            values=lambda events, model: ak.drop_none(
+                ak.max(events["ScoutingPFJet_pt"], axis=1)
+            ),
+            per_model=False,
         ),
     }
 
