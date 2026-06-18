@@ -5,9 +5,10 @@ The evaluator writes, for every model in its config, a two-candidate tri-jet
 collection ``{Model}Candidate_{pt,eta,phi,mass,jetIdx0..2}`` (and, when run on
 GenJets, ``{Model}GenCandidate_*``). This script *discovers* those collections
 in the input files - no hardcoded model list - and fills, per model, the
-tri-jet invariant mass spectrum (both candidates per event). All histograms
-land in a single output ROOT file as TH1D (with Sumw2), named
-``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
+tri-jet mass spectrum: for events whose two candidates agree in mass
+(asymmetry ``|m1-m2|/|m1+m2| < MASS_ASYM_CUT``), the per-event average of the
+two candidate masses. All histograms land in a single output ROOT file as TH1D
+(with Sumw2), named ``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
 
 Two input modes:
 
@@ -65,11 +66,16 @@ def echo(msg):
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from run3_mj_analyzer.fileset import load_fileset
+from run3_mj_analyzer.observables import mass_asymmetry
 
 # A model's candidate collection is identified by its mass branch. The prefix is
 # the evaluator's sanitized model label ("Mass Asymmetry" -> "Mass_Asymmetry");
 # a GenJet pass shows up as its own "model" (e.g. "SPANetGen").
 CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
+
+# Keep only events whose two candidate tri-jets agree in mass: |m1-m2|/|m1+m2|
+# below this. The mass histogram is then filled with their per-event average.
+MASS_ASYM_CUT = 0.3
 
 # Event-level branches read in addition to the candidate collections. Extend
 # this when a future (non-per-model) histogram def needs them.
@@ -91,17 +97,24 @@ class HistDef:
     per_model: bool = True  # instantiate per candidate collection vs. once
 
 
+def _avg_candidate_mass(events, model):
+    """Per-event average of the two candidate tri-jet masses, keeping only events
+    whose candidates have mass asymmetry below ``MASS_ASYM_CUT``."""
+    m = events[f"{model}Candidate_mass"]
+    m1, m2 = m[:, 0], m[:, 1]
+    keep = mass_asymmetry(m1, m2) < MASS_ASYM_CUT
+    return ((m1 + m2) / 2.0)[keep]
+
+
 def histogram_defs(args):
     """Every histogram this script produces. Add new entries here."""
     return {
         "mass": HistDef(
             axis=hist.axis.Regular(
                 args.bins, *args.range, name="mass",
-                label="tri-jet invariant mass [GeV]",
+                label="average tri-jet candidate mass [GeV]",
             ),
-            values=lambda events, model: ak.flatten(
-                events[f"{model}Candidate_mass"], axis=1
-            ),
+            values=_avg_candidate_mass,
         ),
         "ht": HistDef(
             axis=hist.axis.Regular(150, 0.0, 3000.0, name="ht",
