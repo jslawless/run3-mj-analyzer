@@ -8,12 +8,9 @@ solution t1, column 1 is solution t2. So the two solutions for an event are
     t1 = {jetIdx0[:,0], jetIdx1[:,0], jetIdx2[:,0]}
     t2 = {jetIdx0[:,1], jetIdx1[:,1], jetIdx2[:,1]}
 
-"Exclusive" means t1 and t2 share no jet (set(t1) & set(t2) == empty). The
-CombinatorialSolver enumerates only disjoint 3+3 partitions, so it is exclusive
-by construction; SPANet argmaxes its two assignment heads independently, so it
-*can* reuse a jet across the two solutions. This script reports, per model, the
-fraction of events whose two solutions overlap, broken down by how many jets are
-shared, plus the rate of (degenerate) repeated jets *within* a single solution.
+This script reports, per model, the fraction of events whose two solutions
+overlap, broken down by how many jets are shared, plus the rate of (degenerate)
+repeated jets *within* a single solution.
 
 Discovers the models present in the file(s) - no hardcoded model list - so it
 also reports the GenJet pass (``{Model}Gen``) when present. Counts are
@@ -23,7 +20,6 @@ spectrum, so raw event fractions are what you want.
 Examples:
     python scripts/check_exclusivity.py evaluated_TTto4Q_*.root
     python scripts/check_exclusivity.py dataset_evaluated.json
-    python scripts/check_exclusivity.py evaluated_*.root --by-dataset
 """
 
 import argparse
@@ -108,8 +104,8 @@ def discover_models(tree):
     )
 
 
-def resolve_paths(inputs, tree_arg):
-    """Flatten inputs into ``[(path, tree, dataset), ...]``.
+def resolve_paths(inputs):
+    """Flatten inputs into ``[(path, tree), ...]``.
 
     Accepts ROOT files or a single dataset JSON (from make_dataset_json.py).
     Always unweighted, so the JSON only needs its file list - no cutflow
@@ -123,8 +119,7 @@ def resolve_paths(inputs, tree_arg):
         raise SystemExit("Pass at most one dataset JSON.")
 
     if not json_inputs:
-        tree = tree_arg or "events"
-        return [(p, tree, Path(p).stem) for p in root_inputs]
+        return [(p, "events") for p in root_inputs]
 
     # load_fileset is only needed for JSON input; import it lazily so ROOT-file
     # mode runs in any env with uproot/awkward/numpy (the analyzer package
@@ -132,11 +127,11 @@ def resolve_paths(inputs, tree_arg):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from run3_mj_analyzer.fileset import load_fileset
 
-    fileset = load_fileset(json_inputs[0], tree=tree_arg, skip_missing_tree=False)
+    fileset = load_fileset(json_inputs[0], tree=None, skip_missing_tree=False)
     jobs = []
     for name, ds in fileset.items():
         for path, tree in ds["files"].items():
-            jobs.append((path, tree, name))
+            jobs.append((path, tree))
     return jobs
 
 
@@ -151,30 +146,18 @@ def main():
         help="evaluated ROOT file(s), or one dataset JSON from "
         "scripts/make_dataset_json.py",
     )
-    parser.add_argument("--tree", default=None,
-                        help="events tree name (default: 'events', or the "
-                        "dataset JSON's metadata)")
-    parser.add_argument("--step-size", default="500 MB",
-                        help="uproot.iterate chunk size (default: %(default)s)")
-    parser.add_argument("--by-dataset", action="store_true",
-                        help="also print a per-dataset breakdown, not just the "
-                        "global per-model totals")
-    parser.add_argument("--no-progress", action="store_true",
-                        help="suppress tqdm progress bars")
     args = parser.parse_args()
-    use_bars = tqdm is not None and not args.no_progress
+    use_bars = tqdm is not None
 
-    jobs = resolve_paths(args.inputs, args.tree)
+    jobs = resolve_paths(args.inputs)
     print(f"{len(jobs)} file(s) to scan\n")
 
-    # model -> Counts (global), and dataset -> {model -> Counts} if requested.
-    totals = {}
-    per_dataset = {}
+    totals = {}  # model -> Counts (global)
     n_skipped = 0
     t0 = time.monotonic()
 
     file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
-    for path, tree_name, dataset in file_bar:
+    for path, tree_name in file_bar:
         with uproot.open(path) as f:
             if tree_name not in f:
                 echo(f"[skip] {path}: no '{tree_name}' tree")
@@ -188,17 +171,12 @@ def main():
                     "is this evaluator output?"
                 )
             branches = [f"{m}Candidate_jetIdx*" for m in models]
-            for events in tree.iterate(filter_name=branches,
-                                       step_size=args.step_size):
+            for events in tree.iterate(filter_name=branches):
                 for m in models:
                     idx0 = ak.to_numpy(events[f"{m}Candidate_jetIdx0"])
                     idx1 = ak.to_numpy(events[f"{m}Candidate_jetIdx1"])
                     idx2 = ak.to_numpy(events[f"{m}Candidate_jetIdx2"])
                     totals.setdefault(m, Counts()).add(idx0, idx1, idx2)
-                    if args.by_dataset:
-                        per_dataset.setdefault(dataset, {}).setdefault(
-                            m, Counts()
-                        ).add(idx0, idx1, idx2)
     if use_bars:
         file_bar.close()
 
@@ -234,10 +212,6 @@ def main():
     print("'shared%' = events whose solutions overlap (=1/=2/=3 jets shared); "
           "'dup%' = events with a repeated jet within one solution.")
     print_table("Per model (all files):", totals)
-
-    if args.by_dataset:
-        for dataset in sorted(per_dataset):
-            print_table(f"Dataset {dataset}:", per_dataset[dataset])
 
 
 if __name__ == "__main__":
