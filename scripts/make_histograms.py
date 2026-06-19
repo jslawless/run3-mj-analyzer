@@ -26,6 +26,10 @@ can be computed later from the histogram file alone (essential for unweighted
 fills). A dataset whose files lack a ``cutflow`` histogram is recorded as
 ``null`` rather than with a biased partial sum.
 
+The output also carries a ``cutflow`` histogram: the input preselection stages
+summed (unweighted) over every input file, with one bin appended per model for
+the count of events surviving the mass-asymmetry cut.
+
 Adding histograms: add an entry to ``histogram_defs()`` below. A ``per_model``
 definition is instantiated once per discovered candidate collection; a
 non-per-model one (event-level quantities) is filled once per chunk - list any
@@ -97,13 +101,18 @@ class HistDef:
     per_model: bool = True  # instantiate per candidate collection vs. once
 
 
+def _mass_asym_pass(events, model):
+    """Per-event boolean mask: the model's two candidate tri-jets have mass
+    asymmetry below ``MASS_ASYM_CUT``."""
+    m = events[f"{model}Candidate_mass"]
+    return mass_asymmetry(m[:, 0], m[:, 1]) < MASS_ASYM_CUT
+
+
 def _avg_candidate_mass(events, model):
     """Per-event average of the two candidate tri-jet masses, keeping only events
     whose candidates have mass asymmetry below ``MASS_ASYM_CUT``."""
     m = events[f"{model}Candidate_mass"]
-    m1, m2 = m[:, 0], m[:, 1]
-    keep = mass_asymmetry(m1, m2) < MASS_ASYM_CUT
-    return ((m1 + m2) / 2.0)[keep]
+    return ((m[:, 0] + m[:, 1]) / 2.0)[_mass_asym_pass(events, model)]
 
 
 def histogram_defs(args):
@@ -154,12 +163,13 @@ class HistogramBook:
                 values = ak.to_numpy(hdef.values(events, model))
                 h.fill(values, weight=weight)
 
-    def write(self, path, strings=None):
-        """Write all histograms, plus any ``strings`` entries as TObjStrings."""
+    def write(self, path, extra=None):
+        """Write all histograms, plus any ``extra`` named objects (the
+        ``n_original`` TObjString, the ``cutflow`` histogram, ...)."""
         with uproot.recreate(path) as f:
             for key in sorted(self.hists):
                 f[f"h_{key}"] = self.hists[key]
-            for key, value in (strings or {}).items():
+            for key, value in (extra or {}).items():
                 f[key] = value
 
 
@@ -168,6 +178,15 @@ def discover_models(tree):
     return sorted(
         m.group(1) for k in tree.keys() if (m := CANDIDATE_MASS_RE.match(k))
     )
+
+
+def cutflow_labels(cf, n):
+    """Best-effort stage labels for an uproot ``cutflow`` histogram (the slimmer
+    writes a StrCategory); fall back to numbered stages if they can't be read."""
+    try:
+        return [str(s) for s in cf.to_hist().axes[0]]
+    except Exception:
+        return [f"stage{i}" for i in range(n)]
 
 
 def resolve_jobs(args):
@@ -293,6 +312,12 @@ def main():
 
     all_models, n_events, n_skipped = set(), 0, 0
     per_dataset = {}  # dataset -> [n_files, n_events, weight]
+    # Output cutflow, summed (unweighted) over every input file: the slimmer's
+    # preselection stages, plus one appended bin per model for the count of
+    # events surviving the mass-asymmetry cut.
+    cutflow_total = None  # np.ndarray of summed input cutflow bin values
+    cf_labels = None      # stage labels of that input cutflow
+    n_pass_asym = {}      # model -> events passing the mass-asymmetry cut
     t0 = time.monotonic()
 
     file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
@@ -308,6 +333,20 @@ def main():
                         f"for '{dataset}' will be recorded as null"
                     )
                     n_original[dataset] = None
+            # Sum the preselection cutflow across all files (cutflow-only files
+            # included) for the output cutflow.
+            if "cutflow" in f:
+                vals = np.asarray(f["cutflow"].values(), dtype=np.float64)
+                if cutflow_total is None:
+                    cutflow_total = vals
+                    cf_labels = cutflow_labels(f["cutflow"], len(vals))
+                elif len(vals) == len(cutflow_total):
+                    cutflow_total = cutflow_total + vals
+                else:
+                    echo(
+                        f"[warn] {path}: cutflow has {len(vals)} bins, expected "
+                        f"{len(cutflow_total)} - not summed into output cutflow"
+                    )
             if tree_name not in f:
                 echo(f"[skip] {path}: no '{tree_name}' tree")
                 n_skipped += 1
@@ -334,6 +373,10 @@ def main():
                 filter_name=branches, step_size=args.step_size
             ):
                 book.fill(events, models, weight)
+                for m in models:
+                    n_pass_asym[m] = n_pass_asym.get(m, 0.0) + float(
+                        ak.sum(_mass_asym_pass(events, m))
+                    )
                 n_file += len(events)
                 if event_bar is not None:
                     event_bar.update(len(events))
@@ -379,8 +422,31 @@ def main():
         h = book.hists[key]
         print(f"  h_{key}: {h.sum().value:.6g}")
 
-    book.write(args.output, strings={"n_original": json.dumps(n_original)})
-    print(f"\nhistograms + n_original written to {args.output}")
+    extra = {"n_original": json.dumps(n_original)}
+
+    # Output cutflow: input preselection stages + one appended bin per model
+    # for the events surviving the mass-asymmetry cut (unweighted, like the rest
+    # of the cutflow).
+    if cutflow_total is not None:
+        labels = list(cf_labels)
+        values = list(cutflow_total)
+        for m in sorted(all_models):
+            labels.append(f"mass asym < {MASS_ASYM_CUT:g} [{m}]")
+            values.append(n_pass_asym.get(m, 0.0))
+        cutflow = hist.Hist(
+            hist.axis.StrCategory(labels), storage=hist.storage.Double()
+        )
+        cutflow.view()[:] = values
+        extra["cutflow"] = cutflow
+        print("\ncutflow (unweighted events):")
+        for label, value in zip(labels, values):
+            print(f"  {label:<42} {value:>15,.0f}")
+    else:
+        echo("[warn] no input 'cutflow' histogram found - none written to output")
+
+    book.write(args.output, extra=extra)
+    print(f"\nhistograms + n_original{' + cutflow' if cutflow_total is not None else ''} "
+          f"written to {args.output}")
 
 
 if __name__ == "__main__":
