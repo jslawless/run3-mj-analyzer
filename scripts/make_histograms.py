@@ -70,7 +70,6 @@ def echo(msg):
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from run3_mj_analyzer.fileset import load_fileset
-from run3_mj_analyzer.observables import mass_asymmetry
 
 # A model's candidate collection is identified by its mass branch. The prefix is
 # the evaluator's sanitized model label ("Mass Asymmetry" -> "Mass_Asymmetry");
@@ -78,7 +77,9 @@ from run3_mj_analyzer.observables import mass_asymmetry
 CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
 
 # Keep only events whose two candidate tri-jets agree in mass: |m1-m2|/|m1+m2|
-# below this. The mass histogram is then filled with their per-event average.
+# below this. The asymmetry itself is read from the evaluator's per-model
+# {Model}Candidate_massAsymmetry branch; the mass histogram is then filled with
+# the per-event average of the two candidate masses.
 MASS_ASYM_CUT = 0.3
 
 # Event-level branches read in addition to the candidate collections. Extend
@@ -103,9 +104,10 @@ class HistDef:
 
 def _mass_asym_pass(events, model):
     """Per-event boolean mask: the model's two candidate tri-jets have mass
-    asymmetry below ``MASS_ASYM_CUT``."""
-    m = events[f"{model}Candidate_mass"]
-    return mass_asymmetry(m[:, 0], m[:, 1]) < MASS_ASYM_CUT
+    asymmetry below ``MASS_ASYM_CUT``. The asymmetry is read straight from the
+    evaluator's ``{model}Candidate_massAsymmetry`` branch rather than recomputed
+    from the candidate masses."""
+    return events[f"{model}Candidate_massAsymmetry"] < MASS_ASYM_CUT
 
 
 def _avg_candidate_mass(events, model):
