@@ -8,8 +8,13 @@ Fills two families of histograms into a single output ROOT file as TH1D
 (with Sumw2), named ``h_<histogram>``:
 
   physics validation (compare against the same spectra in real >=6-jet data):
-    ht, m6j (6-jet invariant mass), thrust, jet{1..6}_pt (pT-ranked),
+    m6j (6-jet invariant mass), thrust, jet{1..6}_pt (pT-ranked),
     jet_eta, jet_phi, hemi_mass (per-hemisphere tri-jet mass)
+
+  fill_qcd_slimming.py mirror set, written with the SAME bare names and the
+  SAME binning (axes + fills imported from that script, so they cannot
+  drift) for direct overlay with its *_spectra.root outputs:
+    ht, njet, jet_pt
 
   stitching QA (artifacts of the mixing itself):
     match_distance   - goodness of the (directed phi, partner eta) match
@@ -39,6 +44,7 @@ Example:
 """
 
 import argparse
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +53,11 @@ import awkward as ak
 import hist
 import numpy as np
 import uproot
+
+# The ht/njet/jet_pt axes and fills are fill_qcd_slimming.py's, imported so the
+# stitched spectra land with identical binning and overlay without re-binning.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fill_qcd_slimming as qcd_slimming
 
 try:
     from tqdm import tqdm
@@ -117,6 +128,7 @@ class HistDef:
     axis: object
     values: callable
     per_event: int = 1  # fill values per event (for xs_weight broadcasting)
+    key: str = None  # output name; defaults to "h_<def name>"
 
 
 def histogram_defs():
@@ -124,8 +136,6 @@ def histogram_defs():
     ax = hist.axis.Regular
     defs = {
         # -- physics validation ------------------------------------------
-        "ht": HistDef(ax(150, 0.0, 3000.0, name="ht", label="H_{T} [GeV]"),
-                      lambda ev, d: ev["HT"]),
         "m6j": HistDef(ax(150, 0.0, 6000.0, name="m6j",
                           label="6-jet invariant mass [GeV]"),
                        lambda ev, d: d["m6j"]),
@@ -185,6 +195,16 @@ def histogram_defs():
                label=f"jet {rank + 1} p_{{T}} [GeV]"),
             lambda ev, d, r=rank: ak.to_numpy(ev["ScoutingPFJet_pt"][:, r]),
         )
+    # fill_qcd_slimming.py's observables, with its axes/fills and its bare
+    # output names (no "h_" prefix), for direct overlay with *_spectra.root.
+    per_event = {"ht": 1, "njet": 1, "jet_pt": N_JET_RANKS}
+    for obs, axis in qcd_slimming.build_axes().items():
+        defs[obs] = HistDef(
+            axis,
+            lambda ev, d, f=qcd_slimming.FILLS[obs]: f(ev),
+            per_event=per_event[obs],
+            key=obs,
+        )
     return defs
 
 
@@ -212,10 +232,13 @@ class HistogramBook:
                 w = None
             h.fill(values, weight=w)
 
+    def out_name(self, name):
+        return self.defs[name].key or f"h_{name}"
+
     def write(self, path, extra=None):
         with uproot.recreate(path) as f:
-            for key in sorted(self.hists):
-                f[f"h_{key}"] = self.hists[key]
+            for name in sorted(self.hists):
+                f[self.out_name(name)] = self.hists[name]
             for key, value in (extra or {}).items():
                 f[key] = value
 
@@ -302,8 +325,8 @@ def main():
           + (f" | {n_skipped} skipped" if n_skipped else ""))
 
     print("\nhistograms (in-range weighted entries):")
-    for key in sorted(book.hists):
-        print(f"  h_{key}: {book.hists[key].sum().value:.6g}")
+    for name in sorted(book.hists):
+        print(f"  {book.out_name(name)}: {book.hists[name].sum().value:.6g}")
 
     extra = {}
     if cutflow_total is not None:
