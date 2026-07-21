@@ -17,6 +17,11 @@ It fills three event-/jet-level histograms straight off the slimmer branches
   * njet     - per-event jet multiplicity, ``ak.num(ScoutingPFJet_pt)``
   * jet_pt   - inclusive jet ``p_T`` (every jet in every event)
 
+All three are filled only for events with exactly ``N_JETS_CUT`` reconstructed
+jets - a global preselection, so this QCD set matches the exactly-6-jet stitched
+pseudo-events it is overlaid against (the ``njet`` histogram is then a delta at
+that value). Set the cut by editing the constant below.
+
 and writes them to a single ROOT file (one TH1 per observable). Overlaying /
 comparing different sets is a separate downstream step that reads these ROOT
 files; this script only fills and writes.
@@ -68,6 +73,12 @@ HT_BINS, HT_RANGE = 60, (0.0, 3000.0)
 PT_BINS, PT_RANGE = 100, (0.0, 2000.0)
 MAX_NJET = 20  # upper edge of the integer jet-multiplicity axis
 
+# Jet-count preselection: keep only events with EXACTLY this many reconstructed
+# jets, so this QCD reference matches the exactly-6-jet stitched pseudo-events it
+# is overlaid against. Applied to every fill. Settable the same way as the
+# binning constants above - by editing the value here.
+N_JETS_CUT = 6
+
 
 def echo(msg):
     """print() that doesn't tear through active tqdm bars."""
@@ -94,6 +105,11 @@ FILLS = {
     "njet": lambda ev: ak.to_numpy(ak.num(ev["ScoutingPFJet_pt"], axis=1)),
     "jet_pt": lambda ev: ak.to_numpy(ak.flatten(ev["ScoutingPFJet_pt"], axis=1)),
 }
+
+
+def _njet_pass(ev):
+    """Boolean mask selecting events with exactly ``N_JETS_CUT`` jets."""
+    return ak.num(ev["ScoutingPFJet_pt"], axis=1) == N_JETS_CUT
 
 
 def weighted_fileset(json_path, args):
@@ -158,6 +174,8 @@ def fill_histograms(json_path, label, args, axes):
             for ev in f[tree_name].iterate(
                 filter_name=BRANCHES, step_size=args.step_size
             ):
+                # Global jet-count preselection before any histogram is filled.
+                ev = ev[_njet_pass(ev)]
                 for obs, fill in FILLS.items():
                     hists[obs].fill(fill(ev), weight=weight)
                 n_events += len(ev)
