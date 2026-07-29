@@ -1,1 +1,8 @@
 __pycache__
+json_files/cached/*
+pkg-env/*
+root_files/*
+notebooks/plots/*
+notebooks/plots*/*
+*.egg-info
+*.root
