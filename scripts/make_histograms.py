@@ -8,9 +8,8 @@ in the input files - no hardcoded model list - and fills, per model, the
 tri-jet mass spectrum: for events whose two candidates agree in mass
 (asymmetry ``|m1-m2|/|m1+m2| < MASS_ASYM_CUT``), the per-event average of the
 two candidate masses. Every histogram is additionally restricted to events with
-exactly ``N_JETS_CUT`` reconstructed jets - a global event-level preselection.
-All histograms land in a single output ROOT file as TH1D (with Sumw2), named
-``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
+``HT > HT_CUT``. All histograms land in a single output ROOT file as TH1D
+(with Sumw2), named ``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
 
 Two input modes:
 
@@ -29,14 +28,14 @@ fills). A dataset whose files lack a ``cutflow`` histogram is recorded as
 ``null`` rather than with a biased partial sum.
 
 The output also carries a ``cutflow`` histogram: the input preselection stages
-summed (unweighted) over every input file, then a global jet-count bin
-(``njets == N_JETS_CUT``), and one bin appended per model for the count of
-events surviving both the jet-count and mass-asymmetry cuts.
+summed (unweighted) over every input file, with a bin appended for the HT cut
+and then one per model for the count of events surviving the mass-asymmetry cut.
 
 Adding histograms: add an entry to ``histogram_defs()`` below. A ``per_model``
 definition is instantiated once per discovered candidate collection; a
 non-per-model one (event-level quantities) is filled once per chunk - list any
-extra branches it needs in ``EXTRA_BRANCHES``.
+extra branches it needs in ``EXTRA_BRANCHES``. The HT cut is applied centrally
+in ``HistogramBook.fill``, so a new def does not need to re-apply it.
 
 Example:
     python scripts/make_histograms.py evaluated_TTto4Q_*.root -o ttbar_spectra.root
@@ -85,14 +84,15 @@ CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
 # the per-event average of the two candidate masses.
 MASS_ASYM_CUT = 0.3
 
-# Jet-count preselection: keep only events with EXACTLY this many reconstructed
-# jets (ScoutingPFJet). Applied as a global event-level cut to every histogram
-# and recorded as its own cutflow stage. Set it the same way as MASS_ASYM_CUT
-# above - by editing the value here.
-N_JETS_CUT = 6
+# Keep only events above this HT, read from the slimmer's event-level HT branch
+# (already corrected). Tightens the slimmer's looser preselection HT cut onto
+# the trigger plateau. Unlike the mass-asymmetry cut this one is not per-model,
+# so it is applied once to every histogram in the book.
+HT_CUT = 550.0
 
 # Event-level branches read in addition to the candidate collections. Extend
-# this when a future (non-per-model) histogram def needs them.
+# this when a future (non-per-model) histogram def needs them. "HT" is also
+# required by the HT_CUT mask, so it must stay in this list.
 EXTRA_BRANCHES = ["HT", "ScoutingPFJet_pt"]
 
 # Cross sections live in the shared aux repo, assumed checked out next to
@@ -111,19 +111,18 @@ class HistDef:
     per_model: bool = True  # instantiate per candidate collection vs. once
 
 
+def _ht_pass(events):
+    """Per-event boolean mask: event HT above ``HT_CUT``. Read straight from the
+    slimmer's ``HT`` branch rather than recomputed from the jet collection."""
+    return events["HT"] > HT_CUT
+
+
 def _mass_asym_pass(events, model):
     """Per-event boolean mask: the model's two candidate tri-jets have mass
     asymmetry below ``MASS_ASYM_CUT``. The asymmetry is read straight from the
     evaluator's ``{model}Candidate_massAsymmetry`` branch rather than recomputed
     from the candidate masses."""
     return events[f"{model}Candidate_massAsymmetry"] < MASS_ASYM_CUT
-
-
-def _njet_pass(events):
-    """Per-event boolean mask: the event has exactly ``N_JETS_CUT`` reconstructed
-    jets. Unlike the mass-asymmetry cut this is model-independent, so it is
-    applied globally (to every histogram) rather than inside a single fill."""
-    return ak.num(events["ScoutingPFJet_pt"], axis=1) == N_JETS_CUT
 
 
 def _avg_candidate_mass(events, model):
@@ -170,10 +169,10 @@ class HistogramBook:
         self.hists = {}
 
     def fill(self, events, models, weight):
-        # Global jet-count preselection: restrict every histogram (including the
-        # per-model mass fills, which then apply the mass-asymmetry cut on top)
-        # to events with exactly N_JETS_CUT jets.
-        events = events[_njet_pass(events)]
+        # The HT cut is event-level, so it is applied once here instead of in
+        # every def's values function - a new histogram def gets it for free.
+        # Per-histogram cuts (the mass asymmetry) stay in those functions.
+        events = events[_ht_pass(events)]
         for dname, hdef in self.defs.items():
             for model in models if hdef.per_model else [None]:
                 key = f"{dname}_{model}" if model else dname
@@ -339,8 +338,8 @@ def main():
     # events surviving the mass-asymmetry cut.
     cutflow_total = None  # np.ndarray of summed input cutflow bin values
     cf_labels = None      # stage labels of that input cutflow
-    n_pass_njet = 0.0     # events passing the global jet-count cut
-    n_pass_asym = {}      # model -> events passing the jet-count AND mass-asym cuts
+    n_pass_ht = 0.0       # events passing the HT cut
+    n_pass_asym = {}      # model -> events passing HT + the mass-asymmetry cut
     t0 = time.monotonic()
 
     file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
@@ -396,11 +395,13 @@ def main():
                 filter_name=branches, step_size=args.step_size
             ):
                 book.fill(events, models, weight)
-                njet_mask = _njet_pass(events)
-                n_pass_njet += float(ak.sum(njet_mask))
+                ht_pass = _ht_pass(events)
+                n_pass_ht += float(ak.sum(ht_pass))
                 for m in models:
+                    # Sequential with the HT cut, matching how the histograms
+                    # are filled.
                     n_pass_asym[m] = n_pass_asym.get(m, 0.0) + float(
-                        ak.sum(_mass_asym_pass(events, m) & njet_mask)
+                        ak.sum(_mass_asym_pass(events, m) & ht_pass)
                     )
                 n_file += len(events)
                 if event_bar is not None:
@@ -449,16 +450,16 @@ def main():
 
     extra = {"n_original": json.dumps(n_original)}
 
-    # Output cutflow: input preselection stages + one appended bin per model
-    # for the events surviving the mass-asymmetry cut (unweighted, like the rest
-    # of the cutflow).
+    # Output cutflow: input preselection stages + the HT cut + one appended bin
+    # per model for the events surviving HT and the mass-asymmetry cut
+    # (unweighted, like the rest of the cutflow).
     if cutflow_total is not None:
         labels = list(cf_labels)
         values = list(cutflow_total)
-        labels.append(f"njets == {N_JETS_CUT}")
-        values.append(n_pass_njet)
+        labels.append(f"HT > {HT_CUT:g} GeV")
+        values.append(n_pass_ht)
         for m in sorted(all_models):
-            labels.append(f"njets == {N_JETS_CUT} & mass asym < {MASS_ASYM_CUT:g} [{m}]")
+            labels.append(f"mass asym < {MASS_ASYM_CUT:g} [{m}]")
             values.append(n_pass_asym.get(m, 0.0))
         cutflow = hist.Hist(
             hist.axis.StrCategory(labels), storage=hist.storage.Double()
