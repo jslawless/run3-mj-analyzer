@@ -10,14 +10,16 @@ the slice's dataset name, ``n_original`` summed from each file's cutflow[0] by
 run3_mj_analyzer.load_fileset. Pass ``--unweighted`` to fill with weight 1
 instead.
 
-It fills three event-/jet-level histograms straight off the slimmer branches
+It fills five event-/jet-level histograms straight off the slimmer branches
 (no candidate collections needed):
 
   * ht       - per-event ``HT``
   * njet     - per-event jet multiplicity, ``ak.num(ScoutingPFJet_pt)``
   * jet_pt   - inclusive jet ``p_T`` (every jet in every event)
+  * jet_eta  - inclusive jet ``eta`` (every jet in every event)
+  * jet_phi  - inclusive jet ``phi`` (every jet in every event)
 
-All three are filled only for events with exactly ``N_JETS_CUT`` reconstructed
+All five are filled only for events with exactly ``N_JETS_CUT`` reconstructed
 jets - a global preselection, so this QCD set matches the exactly-6-jet stitched
 pseudo-events it is overlaid against (the ``njet`` histogram is then a delta at
 that value). Set the cut by editing the constant below.
@@ -43,6 +45,7 @@ from pathlib import Path
 
 import awkward as ak
 import hist
+import numpy as np
 import uproot
 
 try:
@@ -61,8 +64,8 @@ DEFAULT_XS_JSON = (
     Path(__file__).resolve().parents[2] / "run3-mj-pass-the-aux" / "mj_samples_xs.json"
 )
 
-# Only branches the three observables need, so the iterate stays cheap.
-BRANCHES = ["HT", "ScoutingPFJet_pt"]
+# Only branches the five observables need, so the iterate stays cheap.
+BRANCHES = ["HT", "ScoutingPFJet_pt", "ScoutingPFJet_eta", "ScoutingPFJet_phi"]
 
 # ---------------------------------------------------------------------------
 # Histogram binning. Edit these to change the axes; they are intentionally
@@ -71,6 +74,11 @@ BRANCHES = ["HT", "ScoutingPFJet_pt"]
 # ---------------------------------------------------------------------------
 HT_BINS, HT_RANGE = 60, (0.0, 3000.0)
 PT_BINS, PT_RANGE = 100, (0.0, 2000.0)
+# eta/phi match make_stitched_histograms.py's own jet_eta/jet_phi binning, so
+# the two sets overlay bin-for-bin. The range is wider than the slimmer's
+# |eta| < 2.4 cut on purpose - the empty tails make the cut edge visible.
+ETA_BINS, ETA_RANGE = 60, (-3.0, 3.0)
+PHI_BINS, PHI_RANGE = 64, (-np.pi, np.pi)
 MAX_NJET = 20  # upper edge of the integer jet-multiplicity axis
 
 # Jet-count preselection: keep only events with EXACTLY this many reconstructed
@@ -86,7 +94,7 @@ def echo(msg):
 
 
 def build_axes():
-    """The three histogram axes, from the module-level binning constants."""
+    """The five histogram axes, from the module-level binning constants."""
     return {
         "ht": hist.axis.Regular(HT_BINS, *HT_RANGE, name="ht", label=r"$H_T$ [GeV]"),
         "njet": hist.axis.Integer(
@@ -95,15 +103,24 @@ def build_axes():
         "jet_pt": hist.axis.Regular(
             PT_BINS, *PT_RANGE, name="pt", label=r"jet $p_T$ [GeV]"
         ),
+        "jet_eta": hist.axis.Regular(
+            ETA_BINS, *ETA_RANGE, name="eta", label=r"jet $\eta$"
+        ),
+        "jet_phi": hist.axis.Regular(
+            PHI_BINS, *PHI_RANGE, name="phi", label=r"jet $\phi$"
+        ),
     }
 
 
 # How to turn a chunk of events into each observable's flat fill values. HT and
-# njet are per-event (one value per event); jet_pt is per-jet (every jet).
+# njet are per-event (one value per event); jet_pt/jet_eta/jet_phi are per-jet
+# (every jet).
 FILLS = {
     "ht": lambda ev: ak.to_numpy(ev["HT"]),
     "njet": lambda ev: ak.to_numpy(ak.num(ev["ScoutingPFJet_pt"], axis=1)),
     "jet_pt": lambda ev: ak.to_numpy(ak.flatten(ev["ScoutingPFJet_pt"], axis=1)),
+    "jet_eta": lambda ev: ak.to_numpy(ak.flatten(ev["ScoutingPFJet_eta"], axis=1)),
+    "jet_phi": lambda ev: ak.to_numpy(ak.flatten(ev["ScoutingPFJet_phi"], axis=1)),
 }
 
 
@@ -147,7 +164,7 @@ def weighted_fileset(json_path, args):
 
 
 def fill_histograms(json_path, label, args, axes):
-    """Fill the three histograms for the dataset; return ``{obs: hist.Hist}``."""
+    """Fill the five histograms for the dataset; return ``{obs: hist.Hist}``."""
     fileset, weights = weighted_fileset(json_path, args)
     hists = {
         name: hist.Hist(ax, storage=hist.storage.Weight())
@@ -192,7 +209,8 @@ def fill_histograms(json_path, label, args, axes):
 def main():
     parser = argparse.ArgumentParser(
         description="Fill xsec-weighted HT, jet-multiplicity and inclusive "
-        "jet-pt spectra for one set of slimmed QCD and write them to a ROOT file."
+        "jet pt/eta/phi spectra for one set of slimmed QCD and write them to a "
+        "ROOT file."
     )
     parser.add_argument("input",
                         help="one dataset JSON (from "

@@ -9,12 +9,12 @@ Fills two families of histograms into a single output ROOT file as TH1D
 
   physics validation (compare against the same spectra in real >=6-jet data):
     m6j (6-jet invariant mass), thrust, jet{1..6}_pt (pT-ranked),
-    jet_eta, jet_phi, hemi_mass (per-hemisphere tri-jet mass)
+    hemi_mass (per-hemisphere tri-jet mass)
 
   fill_qcd_slimming.py mirror set, written with the SAME bare names and the
   SAME binning (axes + fills imported from that script, so they cannot
   drift) for direct overlay with its *_spectra.root outputs:
-    ht, njet, jet_pt
+    ht, njet, jet_pt, jet_eta, jet_phi
 
   stitching QA (artifacts of the mixing itself):
     match_distance   - goodness of the (directed phi, partner eta) match
@@ -28,18 +28,28 @@ Fills two families of histograms into a single output ROOT file as TH1D
     min_dr_intra     - min dR within a half (reference for min_dr_inter)
     lead_jet_hemi    - which half owns the leading jet (0 = seed, 1 = match)
 
-Inputs are stitched ROOT files (local paths or root:// URLs) - including the
-chunked files from run3-mj-evaluator's scripts/split_fileset.py. Every fill
-is weighted by the per-event ``xs_weight`` branch (all 1.0 for the current
-stitcher, so effectively unweighted). A ``stitch_cutflow`` summed over every
-input file that carries one is written through to the output (chunked inputs
-only carry it in chunk 0).
+Two input modes, both reading stitcher output - including the chunked files
+from run3-mj-evaluator's scripts/split_fileset.py:
+
+  * one or more stitched ``.root`` files (local paths or root:// URLs).
+  * a single dataset ``.json`` (from scripts/make_dataset_json.py), whose
+    ``datasets`` lists the stitched files; every dataset in it is processed
+    into the same histograms, and the tree name defaults to the JSON's
+    ``metadata.tree``.
+
+Either way every fill is weighted by the per-event ``xs_weight`` branch (all
+1.0 for the current stitcher, so effectively unweighted) - so, unlike
+make_histograms.py, the JSON needs no cross sections and is expanded without
+opening any file. A ``stitch_cutflow`` summed over every input file that
+carries one is written through to the output (chunked inputs only carry it in
+chunk 0).
 
 Adding histograms: add an entry to ``histogram_defs()`` below and list any
 newly-needed branches in BRANCHES.
 
 Example:
     python scripts/make_stitched_histograms.py stitched.root -o stitched_hists.root
+    python scripts/make_stitched_histograms.py dataset_stitched.json -o stitched_hists.root
     python scripts/make_stitched_histograms.py 'root://cmseos.fnal.gov//store/user/.../stitched_chunk*.root' -o stitched_hists.root
 """
 
@@ -54,10 +64,18 @@ import hist
 import numpy as np
 import uproot
 
-# The ht/njet/jet_pt axes and fills are fill_qcd_slimming.py's, imported so the
-# stitched spectra land with identical binning and overlay without re-binning.
+# fill_qcd_slimming.py owns the binning for every observable the two scripts
+# share: its build_axes()/FILLS supply ht, njet and jet_pt/eta/phi outright, and
+# its PT_BINS/PT_RANGE also bin the pT-ranked jet{1..6}_pt axes below. Editing
+# the constants there moves both scripts together - nothing is re-typed here, so
+# the spectra cannot drift out of overlay.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fill_qcd_slimming as qcd_slimming
+
+# Make the package importable without `pip install -e .` (src/ layout).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from run3_mj_analyzer.fileset import DEFAULT_TREE, load_fileset
 
 try:
     from tqdm import tqdm
@@ -142,13 +160,8 @@ def histogram_defs():
         "thrust": HistDef(ax(60, 0.5, 1.0, name="thrust",
                              label="transverse thrust"),
                           lambda ev, d: ev["thrust"]),
-        "jet_eta": HistDef(ax(60, -3.0, 3.0, name="eta", label="jet #eta"),
-                           lambda ev, d: ak.flatten(ev["ScoutingPFJet_eta"]),
-                           per_event=N_JET_RANKS),
-        "jet_phi": HistDef(ax(64, -np.pi, np.pi, name="phi",
-                              label="jet #phi"),
-                           lambda ev, d: ak.flatten(ev["ScoutingPFJet_phi"]),
-                           per_event=N_JET_RANKS),
+        # jet_eta / jet_phi come from the fill_qcd_slimming.py mirror set below
+        # (same binning, bare output names) rather than being defined twice.
         "hemi_mass": HistDef(ax(100, 0.0, 2000.0, name="mass",
                                 label="hemisphere (tri-jet) mass [GeV]"),
                              lambda ev, d: ak.flatten(ev["Hemisphere_mass"]),
@@ -188,17 +201,27 @@ def histogram_defs():
                label="leading jet from: 0 = seed, 1 = match"),
             lambda ev, d: ak.to_numpy(ev["ScoutingPFJet_hemisphere"][:, 0])),
     }
-    # pT-ranked jet spectra: jets are written pT-sorted, so rank = index.
+    # pT-ranked jet spectra: jets are written pT-sorted, so rank = index. The
+    # binning is fill_qcd_slimming.py's PT constants, so every pT axis in both
+    # scripts (inclusive jet_pt and all six ranks) moves together when edited.
     for rank in range(N_JET_RANKS):
         defs[f"jet{rank + 1}_pt"] = HistDef(
-            ax(100, 0.0, 2000.0, name="pt",
+            ax(qcd_slimming.PT_BINS, *qcd_slimming.PT_RANGE, name="pt",
                label=f"jet {rank + 1} p_{{T}} [GeV]"),
             lambda ev, d, r=rank: ak.to_numpy(ev["ScoutingPFJet_pt"][:, r]),
         )
     # fill_qcd_slimming.py's observables, with its axes/fills and its bare
     # output names (no "h_" prefix), for direct overlay with *_spectra.root.
-    per_event = {"ht": 1, "njet": 1, "jet_pt": N_JET_RANKS}
+    per_event = {
+        "ht": 1, "njet": 1,
+        "jet_pt": N_JET_RANKS, "jet_eta": N_JET_RANKS, "jet_phi": N_JET_RANKS,
+    }
     for obs, axis in qcd_slimming.build_axes().items():
+        if obs not in per_event:
+            raise SystemExit(
+                f"fill_qcd_slimming.py added observable '{obs}' - add its fill "
+                f"multiplicity to per_event in {Path(__file__).name}"
+            )
         defs[obs] = HistDef(
             axis,
             lambda ev, d, f=qcd_slimming.FILLS[obs]: f(ev),
@@ -251,17 +274,56 @@ def cutflow_labels(cf, n):
         return [f"stage{i}" for i in range(n)]
 
 
+def resolve_inputs(args):
+    """Flatten the CLI inputs into ``[(path, tree_name), ...]``.
+
+    Bare ROOT paths all get ``--tree`` (or "events"); a dataset JSON is expanded
+    with ``skip_missing_tree=False``, i.e. no file I/O and every path kept, for
+    two reasons: load_fileset's inspection pass demands a ``cutflow`` histogram
+    per file, which stitcher output does not have (it writes ``stitch_cutflow``,
+    and chunked output only in chunk 0), and nothing here needs the
+    ``n_original`` that pass computes - the fills are weighted by the per-event
+    ``xs_weight`` branch. Files with no events tree are skipped by the main loop
+    as they are opened.
+
+    Every dataset in the JSON is filled into the same histograms: for stitched
+    output the "datasets" are usually just chunks of one mixed sample.
+    """
+    json_inputs = [p for p in args.inputs if p.endswith(".json")]
+    root_inputs = [p for p in args.inputs if not p.endswith(".json")]
+    if json_inputs and root_inputs:
+        raise SystemExit("Pass either ROOT files or one dataset JSON, not both.")
+    if len(json_inputs) > 1:
+        raise SystemExit("Pass at most one dataset JSON.")
+
+    if not json_inputs:
+        return [(p, args.tree or DEFAULT_TREE) for p in root_inputs]
+
+    fileset = load_fileset(json_inputs[0], tree=args.tree,
+                           skip_missing_tree=False)
+    jobs = []
+    for name, ds in fileset.items():
+        print(f"[{name}] {len(ds['files'])} file(s)")
+        jobs.extend(ds["files"].items())
+    if not jobs:
+        raise SystemExit(f"{json_inputs[0]} lists no files.")
+    return jobs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="QA + physics spectra from run3-mj-stitch output "
-        "(6-jet pseudo-events), written as TH1D to a single ROOT file."
+        "(6-jet pseudo-events), written as TH1D to a single ROOT file. Takes "
+        "stitched ROOT files or one dataset JSON listing them."
     )
     parser.add_argument("inputs", nargs="+",
-                        help="stitched ROOT file(s), local or root:// URLs")
+                        help="stitched ROOT file(s), local or root:// URLs, or "
+                        "one dataset JSON from scripts/make_dataset_json.py")
     parser.add_argument("-o", "--output", default="stitched_hists.root",
                         help="output ROOT file (default: %(default)s)")
-    parser.add_argument("--tree", default="events",
-                        help="events tree name (default: %(default)s)")
+    parser.add_argument("--tree", default=None,
+                        help="events tree name (default: 'events', or the "
+                        "dataset JSON's metadata)")
     parser.add_argument("--step-size", default="500 MB",
                         help="uproot.iterate chunk size (default: %(default)s)")
     parser.add_argument("--no-progress", action="store_true",
@@ -269,17 +331,19 @@ def main():
     args = parser.parse_args()
     use_bars = tqdm is not None and not args.no_progress
 
+    jobs = resolve_inputs(args)
+
     defs = histogram_defs()
     book = HistogramBook(defs)
-    print(f"{len(args.inputs)} file(s) to process | histograms: "
+    print(f"{len(jobs)} file(s) to process | histograms: "
           f"{sorted(defs)} | output: {args.output}")
 
     n_events, n_skipped = 0, 0
     cutflow_total, cf_labels = None, None
     t0 = time.monotonic()
 
-    file_bar = tqdm(args.inputs, unit="file", desc="files") if use_bars else args.inputs
-    for path in file_bar:
+    file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
+    for path, tree_name in file_bar:
         t_file = time.monotonic()
         with uproot.open(path) as f:
             # Sum the stitcher's cutflow over every file that carries one
@@ -294,11 +358,11 @@ def main():
                 else:
                     echo(f"[warn] {path}: stitch_cutflow has {len(vals)} bins, "
                          f"expected {len(cutflow_total)} - not summed")
-            if args.tree not in f:
-                echo(f"[skip] {path}: no '{args.tree}' tree")
+            if tree_name not in f:
+                echo(f"[skip] {path}: no '{tree_name}' tree")
                 n_skipped += 1
                 continue
-            tree = f[args.tree]
+            tree = f[tree_name]
             missing = [b for b in BRANCHES if b not in tree]
             if missing:
                 raise SystemExit(
@@ -320,7 +384,7 @@ def main():
         raise SystemExit("No histograms filled - no usable input files?")
 
     elapsed = time.monotonic() - t0
-    print(f"\n{n_events:,} events from {len(args.inputs) - n_skipped} file(s) "
+    print(f"\n{n_events:,} events from {len(jobs) - n_skipped} file(s) "
           f"in {elapsed:.1f} s"
           + (f" | {n_skipped} skipped" if n_skipped else ""))
 
