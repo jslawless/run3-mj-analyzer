@@ -8,6 +8,7 @@ in the input files - no hardcoded model list - and fills, per model, the
 tri-jet mass spectrum: for events whose two candidates agree in mass
 (asymmetry ``|m1-m2|/|m1+m2| < MASS_ASYM_CUT``), the per-event average of the
 two candidate masses. Every histogram is additionally restricted to events with
+exactly ``N_JETS_CUT`` reconstructed jets (set it to -1 to drop that cut) and
 ``HT > HT_CUT``. All histograms land in a single output ROOT file as TH1D
 (with Sumw2), named ``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
 
@@ -27,15 +28,21 @@ can be computed later from the histogram file alone (essential for unweighted
 fills). A dataset whose files lack a ``cutflow`` histogram is recorded as
 ``null`` rather than with a biased partial sum.
 
-The output also carries a ``cutflow`` histogram: the input preselection stages
-summed (unweighted) over every input file, with a bin appended for the HT cut
-and then one per model for the count of events surviving the mass-asymmetry cut.
+The output also carries a ``cutflow`` histogram: the inputs' upstream stages
+summed (unweighted) over every input file, with bins appended for the jet-count
+cut (only when it is enabled) and the HT cut, and then one per model for the
+count of events surviving the mass-asymmetry cut.
+The upstream part is read from whichever of ``cutflow`` / ``stitch_cutflow`` /
+``mixer_cutflow`` a file carries, and is simply absent for inputs that carry
+none (stitcher output) - the appended stages are measured here, so they are
+written either way and the cutflow then starts at the HT cut.
 
 Adding histograms: add an entry to ``histogram_defs()`` below. A ``per_model``
 definition is instantiated once per discovered candidate collection; a
 non-per-model one (event-level quantities) is filled once per chunk - list any
-extra branches it needs in ``EXTRA_BRANCHES``. The HT cut is applied centrally
-in ``HistogramBook.fill``, so a new def does not need to re-apply it.
+extra branches it needs in ``EXTRA_BRANCHES``. The jet-count and HT cuts are
+applied centrally in ``HistogramBook.fill``, so a new def does not need to
+re-apply them.
 
 Example:
     python scripts/make_histograms.py evaluated_TTto4Q_*.root -o ttbar_spectra.root
@@ -90,10 +97,27 @@ MASS_ASYM_CUT = 0.3
 # so it is applied once to every histogram in the book.
 HT_CUT = 550.0
 
+# Jet-count preselection: keep only events with EXACTLY this many reconstructed
+# jets - e.g. 6, to match the exactly-6-jet stitched pseudo-events and the
+# exactly-6-jet QCD reference from fill_qcd_slimming.py. Set to -1 to disable the
+# cut entirely (every jet multiplicity kept, and no cutflow bin for it). Like
+# HT_CUT this is event-level and not per-model, so it is applied once to every
+# histogram in the book. Same name/meaning as fill_qcd_slimming.py's constant.
+N_JETS_CUT = 6
+
 # Event-level branches read in addition to the candidate collections. Extend
 # this when a future (non-per-model) histogram def needs them. "HT" is also
-# required by the HT_CUT mask, so it must stay in this list.
+# required by the HT_CUT mask and "ScoutingPFJet_pt" by the N_JETS_CUT mask, so
+# both must stay in this list.
 EXTRA_BRANCHES = ["HT", "ScoutingPFJet_pt"]
+
+# Names an input's upstream cutflow can go by, in priority order: the slimmer
+# (and the mixer, which passes the slimmer's through) writes "cutflow", while
+# the stitcher writes only its own "stitch_cutflow" of hemisphere/draw counts.
+# Whichever a file has is summed and prefixed to the output cutflow. Note this
+# is only for that prefix - n_original stays keyed strictly on "cutflow", since
+# stitch_cutflow[0] counts hemispheres and is not an xsec denominator.
+UPSTREAM_CUTFLOWS = ("cutflow", "stitch_cutflow", "mixer_cutflow")
 
 # Cross sections live in the shared aux repo, assumed checked out next to
 # run3-mj-analyzer (same convention as the notebooks).
@@ -115,6 +139,14 @@ def _ht_pass(events):
     """Per-event boolean mask: event HT above ``HT_CUT``. Read straight from the
     slimmer's ``HT`` branch rather than recomputed from the jet collection."""
     return events["HT"] > HT_CUT
+
+
+def _njet_pass(events):
+    """Per-event boolean mask: exactly ``N_JETS_CUT`` reconstructed jets, or
+    all-True when ``N_JETS_CUT`` is negative (cut disabled)."""
+    if N_JETS_CUT < 0:
+        return ak.ones_like(events["HT"], dtype=bool)
+    return ak.num(events["ScoutingPFJet_pt"], axis=1) == N_JETS_CUT
 
 
 def _mass_asym_pass(events, model):
@@ -169,10 +201,11 @@ class HistogramBook:
         self.hists = {}
 
     def fill(self, events, models, weight):
-        # The HT cut is event-level, so it is applied once here instead of in
-        # every def's values function - a new histogram def gets it for free.
-        # Per-histogram cuts (the mass asymmetry) stay in those functions.
-        events = events[_ht_pass(events)]
+        # The jet-count and HT cuts are event-level, so they are applied once
+        # here instead of in every def's values function - a new histogram def
+        # gets them for free. Per-histogram cuts (the mass asymmetry) stay in
+        # those functions.
+        events = events[_njet_pass(events) & _ht_pass(events)]
         for dname, hdef in self.defs.items():
             for model in models if hdef.per_model else [None]:
                 key = f"{dname}_{model}" if model else dname
@@ -330,6 +363,12 @@ def main():
         f"(bins={args.bins}, range={args.range[0]:g}-{args.range[1]:g}) | "
         f"output: {args.output}"
     )
+    print(
+        f"event cuts: njet == {N_JETS_CUT} | HT > {HT_CUT:g} GeV"
+        if N_JETS_CUT >= 0 else
+        f"event cuts: njet cut disabled (N_JETS_CUT = {N_JETS_CUT}) | "
+        f"HT > {HT_CUT:g} GeV"
+    )
 
     all_models, n_events, n_skipped = set(), 0, 0
     per_dataset = {}  # dataset -> [n_files, n_events, weight]
@@ -338,8 +377,10 @@ def main():
     # events surviving the mass-asymmetry cut.
     cutflow_total = None  # np.ndarray of summed input cutflow bin values
     cf_labels = None      # stage labels of that input cutflow
-    n_pass_ht = 0.0       # events passing the HT cut
-    n_pass_asym = {}      # model -> events passing HT + the mass-asymmetry cut
+    cf_name_used = None   # which UPSTREAM_CUTFLOWS name those came from
+    n_pass_njet = 0.0     # events passing the jet-count cut
+    n_pass_ht = 0.0       # events passing the jet-count cut and then the HT cut
+    n_pass_asym = {}      # model -> events passing njet + HT + mass asymmetry
     t0 = time.monotonic()
 
     file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
@@ -355,18 +396,27 @@ def main():
                         f"for '{dataset}' will be recorded as null"
                     )
                     n_original[dataset] = None
-            # Sum the preselection cutflow across all files (cutflow-only files
-            # included) for the output cutflow.
-            if "cutflow" in f:
-                vals = np.asarray(f["cutflow"].values(), dtype=np.float64)
+            # Sum the upstream cutflow across all files (cutflow-only files
+            # included) to prefix the output cutflow. Accept whichever name this
+            # file uses, so stitcher output contributes its stages too.
+            cf_name = next((k for k in UPSTREAM_CUTFLOWS if k in f), None)
+            if cf_name is not None:
+                vals = np.asarray(f[cf_name].values(), dtype=np.float64)
                 if cutflow_total is None:
                     cutflow_total = vals
-                    cf_labels = cutflow_labels(f["cutflow"], len(vals))
+                    cf_labels = cutflow_labels(f[cf_name], len(vals))
+                    cf_name_used = cf_name
+                elif cf_name != cf_name_used:
+                    echo(
+                        f"[warn] {path}: has '{cf_name}' but earlier files had "
+                        f"'{cf_name_used}' - summing different cutflows would be "
+                        f"meaningless, so this one is skipped"
+                    )
                 elif len(vals) == len(cutflow_total):
                     cutflow_total = cutflow_total + vals
                 else:
                     echo(
-                        f"[warn] {path}: cutflow has {len(vals)} bins, expected "
+                        f"[warn] {path}: {cf_name} has {len(vals)} bins, expected "
                         f"{len(cutflow_total)} - not summed into output cutflow"
                     )
             if tree_name not in f:
@@ -395,13 +445,15 @@ def main():
                 filter_name=branches, step_size=args.step_size
             ):
                 book.fill(events, models, weight)
-                ht_pass = _ht_pass(events)
-                n_pass_ht += float(ak.sum(ht_pass))
+                njet_pass = _njet_pass(events)
+                event_pass = njet_pass & _ht_pass(events)
+                n_pass_njet += float(ak.sum(njet_pass))
+                n_pass_ht += float(ak.sum(event_pass))
                 for m in models:
-                    # Sequential with the HT cut, matching how the histograms
-                    # are filled.
+                    # Sequential with the jet-count and HT cuts, matching how
+                    # the histograms are filled.
                     n_pass_asym[m] = n_pass_asym.get(m, 0.0) + float(
-                        ak.sum(_mass_asym_pass(events, m) & ht_pass)
+                        ak.sum(_mass_asym_pass(events, m) & event_pass)
                     )
                 n_file += len(events)
                 if event_bar is not None:
@@ -450,31 +502,41 @@ def main():
 
     extra = {"n_original": json.dumps(n_original)}
 
-    # Output cutflow: input preselection stages + the HT cut + one appended bin
-    # per model for the events surviving HT and the mass-asymmetry cut
-    # (unweighted, like the rest of the cutflow).
+    # Output cutflow: the inputs' upstream stages when they carry any, then the
+    # jet-count cut (only if enabled), the HT cut, and one appended bin per model
+    # for the events surviving all of those plus the mass-asymmetry cut
+    # (unweighted, like the rest of the cutflow). Those appended stages are this
+    # script's own measurements, so they are always written - inputs with no
+    # upstream cutflow (stitcher output) just get a cutflow that starts at this
+    # script's stages rather than no cutflow at all.
+    labels, values = [], []
     if cutflow_total is not None:
-        labels = list(cf_labels)
-        values = list(cutflow_total)
-        labels.append(f"HT > {HT_CUT:g} GeV")
-        values.append(n_pass_ht)
-        for m in sorted(all_models):
-            labels.append(f"mass asym < {MASS_ASYM_CUT:g} [{m}]")
-            values.append(n_pass_asym.get(m, 0.0))
-        cutflow = hist.Hist(
-            hist.axis.StrCategory(labels), storage=hist.storage.Double()
-        )
-        cutflow.view()[:] = values
-        extra["cutflow"] = cutflow
-        print("\ncutflow (unweighted events):")
-        for label, value in zip(labels, values):
-            print(f"  {label:<42} {value:>15,.0f}")
+        labels += list(cf_labels)
+        values += list(cutflow_total)
     else:
-        echo("[warn] no input 'cutflow' histogram found - none written to output")
+        echo(f"[warn] no upstream cutflow in the inputs (looked for "
+             f"{', '.join(UPSTREAM_CUTFLOWS)}) - the output cutflow starts at "
+             f"this script's own stages")
+    if N_JETS_CUT >= 0:
+        labels.append(f"njet == {N_JETS_CUT:d}")
+        values.append(n_pass_njet)
+    labels.append(f"HT > {HT_CUT:g} GeV")
+    values.append(n_pass_ht)
+    for m in sorted(all_models):
+        labels.append(f"mass asym < {MASS_ASYM_CUT:g} [{m}]")
+        values.append(n_pass_asym.get(m, 0.0))
+    cutflow = hist.Hist(
+        hist.axis.StrCategory(labels), storage=hist.storage.Double()
+    )
+    cutflow.view()[:] = values
+    extra["cutflow"] = cutflow
+    print(f"\ncutflow (unweighted events"
+          f"{f', first {len(cf_labels)} stage(s) from {cf_name_used}' if cutflow_total is not None else ''}):")
+    for label, value in zip(labels, values):
+        print(f"  {label:<42} {value:>15,.0f}")
 
     book.write(args.output, extra=extra)
-    print(f"\nhistograms + n_original{' + cutflow' if cutflow_total is not None else ''} "
-          f"written to {args.output}")
+    print(f"\nhistograms + n_original + cutflow written to {args.output}")
 
 
 if __name__ == "__main__":
