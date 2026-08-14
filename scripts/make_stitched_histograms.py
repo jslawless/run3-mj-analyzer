@@ -2,7 +2,7 @@
 """make_stitched_histograms.py - QA + physics spectra from stitcher output.
 
 Companion to make_histograms.py / make_hemisphere_histograms.py, adapted to
-the run3-mj-stitch output format (``stitched_*.root``: 6-jet pseudo-events
+the run3-mj-assemble output format (``stitched_*.root``: 6-jet pseudo-events
 built from two 3-jet hemispheres, flat NanoAOD-style branches, all weight 1).
 Fills two families of histograms into a single output ROOT file as TH1D
 (with Sumw2), named ``h_<histogram>``:
@@ -40,7 +40,7 @@ from run3-mj-evaluator's scripts/split_fileset.py:
 Either way every fill is weighted by the per-event ``xs_weight`` branch (all
 1.0 for the current stitcher, so effectively unweighted) - so, unlike
 make_histograms.py, the JSON needs no cross sections and is expanded without
-opening any file. A ``stitch_cutflow`` summed over every input file that
+opening any file. A ``chunk_cutflow`` summed over every input file that
 carries one is written through to the output (chunked inputs only carry it in
 chunk 0).
 
@@ -129,8 +129,14 @@ def derive(events):
     a, b = ak.unzip(ak.combinations(jets, 2))
     dr = np.sqrt(_fold_dphi(a.phi - b.phi) ** 2 + (a.eta - b.eta) ** 2)
     inter = a.hemi != b.hemi
+    # These two are the only fills that can lose an event (a half with no jets
+    # leaves no pair to take a min over). The mask says which events survived,
+    # so the weights can lose exactly the same ones - without it there is no
+    # way to line an event up with its weight again.
     d["min_dr_inter"] = ak.drop_none(ak.min(dr[inter], axis=1))
+    d["min_dr_inter_mask"] = ak.to_numpy(ak.num(dr[inter], axis=1) > 0)
     d["min_dr_intra"] = ak.drop_none(ak.min(dr[~inter], axis=1))
+    d["min_dr_intra_mask"] = ak.to_numpy(ak.num(dr[~inter], axis=1) > 0)
     return d
 
 
@@ -139,14 +145,18 @@ class HistDef:
     """One histogram: an axis plus how to compute its fill values.
 
     ``values(events, d)`` gets the chunk and the derive() dict and returns the
-    flat fill array; ``weighted`` picks per-event xs_weight (broadcast to the
-    fill's multiplicity via ``per_event``: 1 = one value/event, 2 = two, ...).
+    flat fill array; the per-event xs_weight is broadcast to the fill's
+    multiplicity via ``per_event`` (1 = one value/event, 2 = two, ...).
+
+    ``mask`` names a per-event boolean in the derive() dict, for the fills that
+    drop events. The weights are cut with it, so they stay aligned.
     """
 
     axis: object
     values: callable
     per_event: int = 1  # fill values per event (for xs_weight broadcasting)
     key: str = None  # output name; defaults to "h_<def name>"
+    mask: str = None  # derive() key holding this fill's per-event selection
 
 
 def histogram_defs():
@@ -191,11 +201,11 @@ def histogram_defs():
         "min_dr_inter": HistDef(
             ax(100, 0.0, 5.0, name="dr",
                label="min #DeltaR (jets from different halves)"),
-            lambda ev, d: d["min_dr_inter"]),
+            lambda ev, d: d["min_dr_inter"], mask="min_dr_inter_mask"),
         "min_dr_intra": HistDef(
             ax(60, 0.0, 3.0, name="dr",
                label="min #DeltaR (jets within one half)"),
-            lambda ev, d: d["min_dr_intra"]),
+            lambda ev, d: d["min_dr_intra"], mask="min_dr_intra_mask"),
         "lead_jet_hemi": HistDef(
             ax(2, -0.5, 1.5, name="hemi",
                label="leading jet from: 0 = seed, 1 = match"),
@@ -247,12 +257,19 @@ class HistogramBook:
                     hdef.axis, storage=hist.storage.Weight()
                 )
             values = ak.to_numpy(hdef.values(events, derived))
-            w = (np.repeat(weight, hdef.per_event)
-                 if hdef.per_event > 1 else weight)
-            # Defensive: derived quantities that drop events (min over empty
-            # pair sets) fall back to unit weights rather than misaligning.
+            w = weight[derived[hdef.mask]] if hdef.mask else weight
+            if hdef.per_event > 1:
+                w = np.repeat(w, hdef.per_event)
             if len(w) != len(values):
-                w = None
+                # Deliberately not a fallback to unit weights: xs_weight spans
+                # orders of magnitude across HT slices, so an unweighted
+                # histogram would look plausible and be wrong. A fill that
+                # drops events has to declare it through mask=.
+                raise SystemExit(
+                    f"{self.out_name(name)}: {len(values)} fill values but "
+                    f"{len(w)} weights. This def drops events; give it a "
+                    "mask= naming a per-event boolean in derive()."
+                )
             h.fill(values, weight=w)
 
     def out_name(self, name):
@@ -280,7 +297,7 @@ def resolve_inputs(args):
     Bare ROOT paths all get ``--tree`` (or "events"); a dataset JSON is expanded
     with ``skip_missing_tree=False``, i.e. no file I/O and every path kept, for
     two reasons: load_fileset's inspection pass demands a ``cutflow`` histogram
-    per file, which stitcher output does not have (it writes ``stitch_cutflow``,
+    per file, which stitcher output does not have (it writes ``chunk_cutflow``,
     and chunked output only in chunk 0), and nothing here needs the
     ``n_original`` that pass computes - the fills are weighted by the per-event
     ``xs_weight`` branch. Files with no events tree are skipped by the main loop
@@ -312,7 +329,7 @@ def resolve_inputs(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="QA + physics spectra from run3-mj-stitch output "
+        description="QA + physics spectra from run3-mj-assemble output "
         "(6-jet pseudo-events), written as TH1D to a single ROOT file. Takes "
         "stitched ROOT files or one dataset JSON listing them."
     )
@@ -348,15 +365,15 @@ def main():
         with uproot.open(path) as f:
             # Sum the stitcher's cutflow over every file that carries one
             # (split_fileset.py chunks carry it in chunk 0 only).
-            if "stitch_cutflow" in f:
-                vals = np.asarray(f["stitch_cutflow"].values(), dtype=np.float64)
+            if "chunk_cutflow" in f:
+                vals = np.asarray(f["chunk_cutflow"].values(), dtype=np.float64)
                 if cutflow_total is None:
                     cutflow_total = vals
-                    cf_labels = cutflow_labels(f["stitch_cutflow"], len(vals))
+                    cf_labels = cutflow_labels(f["chunk_cutflow"], len(vals))
                 elif len(vals) == len(cutflow_total):
                     cutflow_total = cutflow_total + vals
                 else:
-                    echo(f"[warn] {path}: stitch_cutflow has {len(vals)} bins, "
+                    echo(f"[warn] {path}: chunk_cutflow has {len(vals)} bins, "
                          f"expected {len(cutflow_total)} - not summed")
             if tree_name not in f:
                 echo(f"[skip] {path}: no '{tree_name}' tree")
@@ -398,12 +415,12 @@ def main():
             hist.axis.StrCategory(cf_labels), storage=hist.storage.Double()
         )
         cutflow.view()[:] = cutflow_total
-        extra["stitch_cutflow"] = cutflow
+        extra["chunk_cutflow"] = cutflow
         print("\nstitch cutflow (summed over inputs):")
         for label, value in zip(cf_labels, cutflow_total):
             print(f"  {label:<42} {value:>15,.0f}")
     else:
-        echo("[warn] no input 'stitch_cutflow' found - none written to output")
+        echo("[warn] no input 'chunk_cutflow' found - none written to output")
 
     book.write(args.output, extra=extra)
     print(f"\nhistograms written to {args.output}")

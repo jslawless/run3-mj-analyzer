@@ -90,6 +90,14 @@ MASS_ASYM_CUT = 0.3
 # this when a future (non-per-model) histogram def needs them.
 EXTRA_BRANCHES = ["HT", "ScoutingPFJet_pt"]
 
+#: Per-event weight branch, when the input carries one of its own. Mixed
+#: pseudo-events do: the mixer resolves ``w_rel[seed] * w_rel[match]`` per event
+#: at assembly and writes it as ``xs_weight``, and the evaluator passes every
+#: input branch through untouched. That is a *different kind* of weight from the
+#: QCD slice weighting below - it is already per event and already contains both
+#: parents' xs/N, so the two must never both be applied.
+EVENT_WEIGHT_BRANCH = "xs_weight"
+
 # Cross sections live in the shared aux repo, assumed checked out next to
 # run3-mj-analyzer (same convention as the notebooks).
 DEFAULT_XS_JSON = (
@@ -99,11 +107,21 @@ DEFAULT_XS_JSON = (
 
 @dataclass
 class HistDef:
-    """One histogram family: an axis plus how to compute its fill values."""
+    """One histogram family: an axis plus how to compute its fill values.
+
+    ``values(events, model)`` must return **one value per event**, and any
+    selection this family applies goes in ``mask(events, model)`` rather than
+    inside ``values``. That split is what lets the per-event weight be cut down
+    the same way the values are: with the selection buried in ``values`` there
+    is no way to know which events survived, and a weight array of the wrong
+    length would either raise or - worse - silently pair weights with the wrong
+    events.
+    """
 
     axis: object  # hist axis, shared by every instance of this family
-    values: callable  # (events, model) -> flat array of fill values
+    values: callable  # (events, model) -> one fill value per event
     per_model: bool = True  # instantiate per candidate collection vs. once
+    mask: callable = None  # (events, model) -> per-event bool, or None for all
 
 
 def _mass_asym_pass(events, model):
@@ -114,10 +132,22 @@ def _mass_asym_pass(events, model):
 
 
 def _candidate_mass(events, model, i):
-    """Mass of candidate ``i`` (0 or 1) per event, keeping only events whose two
-    candidates have mass asymmetry below ``MASS_ASYM_CUT``."""
-    m = events[f"{model}Candidate_mass"]
-    return m[:, i][_mass_asym_pass(events, model)]
+    """Mass of candidate ``i`` (0 or 1), one value per event.
+
+    Unselected - the mass-asymmetry cut is the def's ``mask``, so that the fill
+    weights can be cut with it.
+    """
+    return events[f"{model}Candidate_mass"][:, i]
+
+
+def _has_jets(events, model):
+    """Per-event boolean mask: the event has at least one jet.
+
+    ``leadjet_pt`` takes a max over the jet collection, which is None for an
+    empty event; expressed as a mask rather than a drop_none inside the values
+    function, so the weights lose exactly the same events.
+    """
+    return ak.num(events["ScoutingPFJet_pt"], axis=1) > 0
 
 
 def histogram_defs(args):
@@ -129,6 +159,7 @@ def histogram_defs(args):
                 label="candidate 0 tri-jet mass [GeV]",
             ),
             values=lambda events, model: _candidate_mass(events, model, 0),
+            mask=_mass_asym_pass,
         ),
         "mass_cand1": HistDef(
             axis=hist.axis.Regular(
@@ -136,6 +167,7 @@ def histogram_defs(args):
                 label="candidate 1 tri-jet mass [GeV]",
             ),
             values=lambda events, model: _candidate_mass(events, model, 1),
+            mask=_mass_asym_pass,
         ),
         "ht": HistDef(
             axis=hist.axis.Regular(150, 0.0, 3000.0, name="ht",
@@ -148,10 +180,10 @@ def histogram_defs(args):
                                    label="leading jet p_{T} [GeV]"),
             # Corrected pt is not guaranteed sorted (JES applied after the
             # NanoAOD raw-pt ordering), so take the max, not the first jet.
-            values=lambda events, model: ak.drop_none(
-                ak.max(events["ScoutingPFJet_pt"], axis=1)
-            ),
+            values=lambda events, model: ak.max(events["ScoutingPFJet_pt"],
+                                                axis=1),
             per_model=False,
+            mask=_has_jets,
         ),
     }
 
@@ -164,6 +196,13 @@ class HistogramBook:
         self.hists = {}
 
     def fill(self, events, models, weight):
+        """Fill every def from one chunk.
+
+        ``weight`` is either a scalar (one dataset-level weight for all events)
+        or one weight per event, when the input carries its own. Either way it
+        follows the events through the defs' masks, so a fill value and its
+        weight always come from the same event.
+        """
         for dname, hdef in self.defs.items():
             for model in models if hdef.per_model else [None]:
                 key = f"{dname}_{model}" if model else dname
@@ -172,8 +211,27 @@ class HistogramBook:
                     h = self.hists[key] = hist.Hist(
                         hdef.axis, storage=hist.storage.Weight()
                     )
-                values = ak.to_numpy(hdef.values(events, model))
-                h.fill(values, weight=weight)
+                values = hdef.values(events, model)
+                w = weight
+                if hdef.mask is not None:
+                    sel = hdef.mask(events, model)
+                    values = values[sel]
+                    if not np.isscalar(w):
+                        w = w[ak.to_numpy(sel)]
+                values = ak.to_numpy(ak.drop_none(values))
+                if not np.isscalar(w) and len(w) != len(values):
+                    # Never fall back to unit weights here: for mixed
+                    # pseudo-events xs_weight spans orders of magnitude, so a
+                    # silently unweighted histogram would look plausible and be
+                    # wrong. A values function that drops events without saying
+                    # so through its mask is the bug; say which one.
+                    raise SystemExit(
+                        f"h_{key}: {len(values)} fill values but {len(w)} "
+                        "weights. The values function for this def drops "
+                        "events; move that selection into the def's mask= so "
+                        "the weights can be cut with it."
+                    )
+                h.fill(values, weight=w)
 
     def write(self, path, extra=None):
         """Write all histograms, plus any ``extra`` named objects (the
@@ -297,6 +355,17 @@ def main():
     parser.add_argument("--unweighted", action="store_true",
                         help="dataset-JSON mode: fill with weight 1 instead of "
                         "xsec weights")
+    parser.add_argument("--event-weight", default=EVENT_WEIGHT_BRANCH,
+                        metavar="BRANCH",
+                        help="per-event weight branch to use when the input "
+                        "carries one (default: %(default)s). Mixed "
+                        "pseudo-events do: the weight is resolved per event at "
+                        "assembly, so it is read from the file rather than "
+                        "derived here. Inputs without the branch are unaffected.")
+    parser.add_argument("--no-event-weight", action="store_true",
+                        help="ignore a per-event weight branch even when the "
+                        "input has one. Shape-only plots; the result is not a "
+                        "yield.")
     parser.add_argument("--step-size", default="500 MB",
                         help="uproot.iterate chunk size (default: %(default)s)")
     parser.add_argument("--no-progress", action="store_true",
@@ -330,6 +399,8 @@ def main():
     cutflow_total = None  # np.ndarray of summed input cutflow bin values
     cf_labels = None      # stage labels of that input cutflow
     n_pass_asym = {}      # model -> events passing the mass-asymmetry cut
+    event_weighted = set()      # datasets whose weights came from the file
+    sum_event_weight = {}       # dataset -> summed per-event weight, all events
     t0 = time.monotonic()
 
     file_bar = tqdm(jobs, unit="file", desc="files") if use_bars else jobs
@@ -374,7 +445,34 @@ def main():
             if new_models:
                 echo(f"[models] found {sorted(new_models)} in {Path(path).name}")
                 all_models.update(new_models)
+            # Per-event weights are a property of the file, not of the run, so
+            # the decision is made per file: mixing weighted pseudo-events and
+            # unweighted MC in one job is legitimate.
+            wbranch = None
+            if not args.no_event_weight and args.event_weight in tree:
+                wbranch = args.event_weight
+                # Every path that gets here with weight != 1.0 is the xsec
+                # dataset-JSON path, and its weight is lumi*xs/N - which these
+                # events already carry, per parent, inside the branch.
+                if weight != 1.0:
+                    raise SystemExit(
+                        f"{path} carries a per-event '{wbranch}' branch, and "
+                        f"this dataset also has an external weight "
+                        f"({weight:.4g} = lumi*xs/N). Applying both would "
+                        "count the cross section twice - these events already "
+                        "carry both parents' xs/N. Use --unweighted, so the "
+                        "per-event weight is the only normalization, or "
+                        "--no-event-weight to ignore the branch."
+                    )
+                if dataset not in event_weighted:
+                    echo(f"[weights] {dataset}: per-event '{wbranch}' read "
+                         "from the file"
+                         + (f", scaled by --lumi {args.lumi:g}"
+                            if args.lumi != 1.0 else ""))
+                event_weighted.add(dataset)
             branches = [f"{m}Candidate_*" for m in models] + EXTRA_BRANCHES
+            if wbranch:
+                branches = branches + [wbranch]
             event_bar = (
                 tqdm(total=tree.num_entries, unit="evt", leave=False,
                      desc=Path(path).name[:48])
@@ -384,7 +482,15 @@ def main():
             for events in tree.iterate(
                 filter_name=branches, step_size=args.step_size
             ):
-                book.fill(events, models, weight)
+                w = weight
+                if wbranch:
+                    # The file's own weight. --lumi still scales it, being a
+                    # pure multiplier, but nothing else is applied on top.
+                    w = args.lumi * ak.to_numpy(events[wbranch]).astype(
+                        np.float64)
+                    sum_event_weight[dataset] = (
+                        sum_event_weight.get(dataset, 0.0) + float(w.sum()))
+                book.fill(events, models, w)
                 for m in models:
                     n_pass_asym[m] = n_pass_asym.get(m, 0.0) + float(
                         ak.sum(_mass_asym_pass(events, m))
@@ -426,8 +532,19 @@ def main():
     for name, (n_files, n_evts, weight) in per_dataset.items():
         n_orig = n_original.get(name)
         n_orig_s = f"{n_orig:,.0f}" if n_orig is not None else "null"
-        print(f"{name[:58]:<58} {n_files:>5} {n_evts:>12,} {weight:>10.4g} "
+        w_s = "per-event" if name in event_weighted else f"{weight:.4g}"
+        print(f"{name[:58]:<58} {n_files:>5} {n_evts:>12,} {w_s:>10} "
               f"{n_orig_s:>12}")
+
+    if sum_event_weight:
+        # Sum before any cut. The mixer's xs_weight is a product of two w_rel,
+        # so it is pb^2/event^2 rather than a cross section: the sample needs a
+        # global rescale to be read as a yield, and this is its denominator.
+        # Recorded in the output as well, so the rescale stays derivable from
+        # the histogram file alone.
+        print("\nsummed per-event weight (all events, before cuts):")
+        for name, total in sum_event_weight.items():
+            print(f"  {name[:58]:<58} {total:.6g}")
 
     print("\nhistograms (in-range weighted entries):")
     for key in sorted(book.hists):
@@ -435,6 +552,8 @@ def main():
         print(f"  h_{key}: {h.sum().value:.6g}")
 
     extra = {"n_original": json.dumps(n_original)}
+    if sum_event_weight:
+        extra["sum_event_weight"] = json.dumps(sum_event_weight)
 
     # Output cutflow: input preselection stages + one appended bin per model
     # for the events surviving the mass-asymmetry cut (unweighted, like the rest
