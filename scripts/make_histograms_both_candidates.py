@@ -362,6 +362,15 @@ def main():
                         "pseudo-events do: the weight is resolved per event at "
                         "assembly, so it is read from the file rather than "
                         "derived here. Inputs without the branch are unaffected.")
+    parser.add_argument("--weight-power", type=float, default=0.5,
+                        metavar="P",
+                        help="exponent applied to the per-event weight before "
+                        "filling (default: %(default)s). The mixer stores "
+                        "xs_weight as w_rel[seed]*w_rel[match], a product of "
+                        "two slice weights and so pb^2/event^2; its square "
+                        "root is the geometric mean of the two parents, "
+                        "restores pb/event, and is still symmetric in the two "
+                        "halves. Pass 1.0 to fill with the stored product.")
     parser.add_argument("--no-event-weight", action="store_true",
                         help="ignore a per-event weight branch even when the "
                         "input has one. Shape-only plots; the result is not a "
@@ -465,7 +474,10 @@ def main():
                         "--no-event-weight to ignore the branch."
                     )
                 if dataset not in event_weighted:
-                    echo(f"[weights] {dataset}: per-event '{wbranch}' read "
+                    how = (f"sqrt({wbranch})" if args.weight_power == 0.5
+                           else wbranch if args.weight_power == 1.0
+                           else f"{wbranch}**{args.weight_power:g}")
+                    echo(f"[weights] {dataset}: per-event {how} read "
                          "from the file"
                          + (f", scaled by --lumi {args.lumi:g}"
                             if args.lumi != 1.0 else ""))
@@ -484,10 +496,13 @@ def main():
             ):
                 w = weight
                 if wbranch:
-                    # The file's own weight. --lumi still scales it, being a
-                    # pure multiplier, but nothing else is applied on top.
+                    # The file's own weight, raised to --weight-power: the
+                    # stored value is a product of two slice weights, and the
+                    # square root turns that back into a per-event quantity
+                    # with the dimensions of one. --lumi still scales it,
+                    # being a pure multiplier, but nothing else is applied.
                     w = args.lumi * ak.to_numpy(events[wbranch]).astype(
-                        np.float64)
+                        np.float64) ** args.weight_power
                     sum_event_weight[dataset] = (
                         sum_event_weight.get(dataset, 0.0) + float(w.sum()))
                 book.fill(events, models, w)

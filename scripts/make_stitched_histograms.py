@@ -244,12 +244,19 @@ def histogram_defs():
 class HistogramBook:
     """Lazily-created histograms keyed by def name."""
 
-    def __init__(self, defs):
+    def __init__(self, defs, weight_power=0.5):
         self.defs = defs
         self.hists = {}
+        # The stored xs_weight is w_rel[seed]*w_rel[match] - a product of two
+        # slice weights, so pb^2/event^2. The square root is their geometric
+        # mean: still symmetric in the two halves, but with the dimensions of
+        # one parent's weight.
+        self.weight_power = weight_power
 
     def fill(self, events, derived):
-        weight = ak.to_numpy(events["xs_weight"])
+        weight = ak.to_numpy(events["xs_weight"]).astype(np.float64)
+        if self.weight_power != 1.0:
+            weight = weight ** self.weight_power
         for name, hdef in self.defs.items():
             h = self.hists.get(name)
             if h is None:
@@ -338,6 +345,15 @@ def main():
                         "one dataset JSON from scripts/make_dataset_json.py")
     parser.add_argument("-o", "--output", default="stitched_hists.root",
                         help="output ROOT file (default: %(default)s)")
+    parser.add_argument("--weight-power", type=float, default=0.5,
+                        metavar="P",
+                        help="exponent applied to the per-event xs_weight "
+                        "before filling (default: %(default)s). The stored "
+                        "value is w_rel[seed]*w_rel[match], a product of two "
+                        "slice weights and so pb^2/event^2; its square root is "
+                        "the geometric mean of the two parents, restores "
+                        "pb/event, and is still symmetric in the two halves. "
+                        "Pass 1.0 to fill with the stored product.")
     parser.add_argument("--tree", default=None,
                         help="events tree name (default: 'events', or the "
                         "dataset JSON's metadata)")
@@ -351,7 +367,7 @@ def main():
     jobs = resolve_inputs(args)
 
     defs = histogram_defs()
-    book = HistogramBook(defs)
+    book = HistogramBook(defs, weight_power=args.weight_power)
     print(f"{len(jobs)} file(s) to process | histograms: "
           f"{sorted(defs)} | output: {args.output}")
 

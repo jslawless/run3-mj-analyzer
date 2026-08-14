@@ -33,9 +33,13 @@ cross section twice, so it is refused rather than silently done. Pass
 ``--no-event-weight`` for shape-only plots, or ``--event-weight BRANCH`` to
 read a different one.
 
-Note the product is pb^2/event^2, not a cross section, so a sample weighted
-this way needs a global rescale before it is a yield. The summed per-event
-weight is printed and stored, so that rescale stays derivable.
+The stored value is a *product* of two slice weights, so it carries
+pb^2/event^2 rather than a cross section. Fills therefore use its **square
+root** by default (``--weight-power``, 0.5): the geometric mean of the two
+parents, still symmetric in the two halves, and back to pb/event. Pass
+``--weight-power 1.0`` to fill with the stored product instead. Either way the
+scale is not absolute - the summed per-event weight is printed and stored so
+the rescale stays derivable.
 
 In every mode the output file also gets an ``n_original`` TObjString: a JSON
 map of ``{dataset: cutflow[0] sum}`` so the xsec weight ``lumi * xs_pb / N``
@@ -139,11 +143,13 @@ EVENT_WEIGHT_BRANCH = "xs_weight"
 
 # Names an input's upstream cutflow can go by, in priority order: the slimmer
 # (and the mixer, which passes the slimmer's through) writes "cutflow", while
-# the stitcher writes only its own "stitch_cutflow" of hemisphere/draw counts.
-# Whichever a file has is summed and prefixed to the output cutflow. Note this
-# is only for that prefix - n_original stays keyed strictly on "cutflow", since
-# stitch_cutflow[0] counts hemispheres and is not an xsec denominator.
-UPSTREAM_CUTFLOWS = ("cutflow", "stitch_cutflow", "mixer_cutflow")
+# the mixer's assemble stage writes only its own "chunk_cutflow" of per-chunk
+# pseudo-event and leg counts ("stitch_cutflow" / "mixer_cutflow" are what its
+# predecessors called theirs). Whichever a file has is summed and prefixed to
+# the output cutflow. Note this is only for that prefix - n_original stays
+# keyed strictly on "cutflow", since none of the others is an xsec denominator.
+UPSTREAM_CUTFLOWS = ("cutflow", "chunk_cutflow", "stitch_cutflow",
+                     "mixer_cutflow")
 
 # Cross sections live in the shared aux repo, assumed checked out next to
 # run3-mj-analyzer (same convention as the notebooks).
@@ -425,6 +431,15 @@ def main():
                         "pseudo-events do: the weight is resolved per event at "
                         "assembly, so it is read from the file rather than "
                         "derived here. Inputs without the branch are unaffected.")
+    parser.add_argument("--weight-power", type=float, default=0.5,
+                        metavar="P",
+                        help="exponent applied to the per-event weight before "
+                        "filling (default: %(default)s). The mixer stores "
+                        "xs_weight as w_rel[seed]*w_rel[match], a product of "
+                        "two slice weights and so pb^2/event^2; its square "
+                        "root is the geometric mean of the two parents, "
+                        "restores pb/event, and is still symmetric in the two "
+                        "halves. Pass 1.0 to fill with the stored product.")
     parser.add_argument("--no-event-weight", action="store_true",
                         help="ignore a per-event weight branch even when the "
                         "input has one. Shape-only plots; the result is not a "
@@ -546,7 +561,10 @@ def main():
                         "--no-event-weight to ignore the branch."
                     )
                 if dataset not in event_weighted:
-                    echo(f"[weights] {dataset}: per-event '{wbranch}' read "
+                    how = (f"sqrt({wbranch})" if args.weight_power == 0.5
+                           else wbranch if args.weight_power == 1.0
+                           else f"{wbranch}**{args.weight_power:g}")
+                    echo(f"[weights] {dataset}: per-event {how} read "
                          "from the file"
                          + (f", scaled by --lumi {args.lumi:g}"
                             if args.lumi != 1.0 else ""))
@@ -565,10 +583,13 @@ def main():
             ):
                 w = weight
                 if wbranch:
-                    # The file's own weight. --lumi still scales it, being a
-                    # pure multiplier, but nothing else is applied on top.
+                    # The file's own weight, raised to --weight-power: the
+                    # stored value is a product of two slice weights, and the
+                    # square root turns that back into a per-event quantity
+                    # with the dimensions of one. --lumi still scales it,
+                    # being a pure multiplier, but nothing else is applied.
                     w = args.lumi * ak.to_numpy(events[wbranch]).astype(
-                        np.float64)
+                        np.float64) ** args.weight_power
                     sum_event_weight[dataset] = (
                         sum_event_weight.get(dataset, 0.0) + float(w.sum()))
                 book.fill(events, models, w)

@@ -5,6 +5,14 @@ import warnings
 
 DEFAULT_TREE = "events"
 
+#: Cutflows written by stages downstream of the slimmer. A file carrying one of
+#: these instead of ``cutflow`` is complete - it is just not a slimmed file, and
+#: has no slimmer denominator to contribute. The mixer's assemble stage writes
+#: ``chunk_cutflow`` (per-chunk counts only, so that hadd does not multiply the
+#: global ones); ``stitch_cutflow`` and ``mixer_cutflow`` are its predecessors.
+DOWNSTREAM_CUTFLOWS = ("chunk_cutflow", "stitch_cutflow", "mixer_cutflow",
+                       "index_cutflow")
+
 
 def _inspect_file(path, tree):
     """Open a slimmed file once and report ``(has_<tree>, cutflow[0])``.
@@ -13,15 +21,27 @@ def _inspect_file(path, tree):
     is the first ``cutflow`` bin (total events the slimmer read for this file =
     this file's contribution to the xsec-normalisation denominator).
 
-    Raises ``ValueError`` if the file has no ``cutflow`` histogram: that means
-    the slimmer job that wrote it did not finish (a truncated/partial output), so
-    counting it would bias ``n_original`` - fail loudly rather than skip it.
+    Raises ``ValueError`` if there is no ``cutflow`` histogram, distinguishing
+    the two ways that happens: a truncated slimmer output (counting it would
+    bias ``n_original``, so fail rather than skip), or a complete file from a
+    later stage, which has no slimmer denominator to give and does not need one
+    because it carries its own per-event weights.
     """
     import uproot
 
     with uproot.open(path) as f:
         has_tree = tree in f
         if "cutflow" not in f:
+            downstream = [k for k in DOWNSTREAM_CUTFLOWS if k in f]
+            if downstream:
+                raise ValueError(
+                    f"{path} has no 'cutflow' histogram, but it does have "
+                    f"'{downstream[0]}': this is not slimmer output, it is a "
+                    "complete file from a later stage. There is no xsec "
+                    "denominator to read from it - and no need for one, since "
+                    "these events carry their own per-event weight. Pass "
+                    "--unweighted so no external weight is derived."
+                )
             raise ValueError(
                 f"{path} has no 'cutflow' histogram: the slimmer job that "
                 "produced it did not finish (partial/truncated output). Re-run "

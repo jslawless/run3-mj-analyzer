@@ -7,27 +7,35 @@ exactly 6 jets, and mixed pseudo-events, compared in ``ht`` / ``njet`` /
 QCD sets) and ``make_stitched_histograms.py`` (the pseudo-events), which fill
 the same axes under the same bare names so their histograms line up.
 
-The interesting part is the normalisation. Pseudo-event weights are
-pb^2/event^2 - a product of two slice weights - so their absolute scale means
-nothing and they can only be compared to QCD after being scaled to it. That is
-what ``--normalise`` does: the named curves are multiplied by
-``integral(reference) / integral(curve)``, exactly the notebook's
-``f6['njet'].sum() / mix['njet'].sum()``.
+**Every curve is area-normalised to unit area**, so the figures compare shapes.
+That is the only sound default here: pseudo-event weights are pb^2/event^2 - a
+product of two slice weights - so their absolute scale is not on the same
+footing as an xsec-weighted QCD spectrum, and putting the raw numbers on shared
+axes would invite reading a difference that is pure normalisation.
 
-The factor is computed once, from ``--norm-from`` (default ``njet``), and then
-applied to *every* observable - not recomputed per plot. That is deliberate: a
-per-plot factor would force every overlay to match in area and so hide the
-question being asked, which is whether one scale factor makes the pseudo-events
-agree with QCD everywhere at once.
-
-    # the notebook's first three figures
     python scripts/plot_slimmed_spectra.py \\
         qcd6_spectra.root qcd5_spectra.root mixed_spectra.root \\
-        --label "6 jets" "5 jets" "Pseudo-events" \\
-        --normalise "Pseudo-events" -o plots/
+        --label "6 jets" "5 jets" "Pseudo-events" -o plots/
 
-    # its fourth: HT above a cut, renormalised over that range alone
-    python scripts/plot_slimmed_spectra.py ... --xmin ht=550 --norm-from ht
+    # HT above a cut; each curve is then normalised over that range alone
+    python scripts/plot_slimmed_spectra.py ... --xmin ht=550
+
+``--absolute`` turns that off and plots weighted entries, which is when the
+notebook's other normalisation matters: ``--normalise`` scales the named curves
+by ``integral(reference) / integral(curve)``, exactly its
+``f6['njet'].sum() / mix['njet'].sum()``. That factor is computed once, from
+``--norm-from`` (default ``njet``), and applied to *every* observable rather
+than recomputed per plot - which is the whole point of it, since it asks
+whether one scale factor makes the pseudo-events agree with QCD everywhere at
+once. Under area normalisation a constant factor cancels, so the two options
+are mutually exclusive and saying both is an error rather than a silent no-op.
+
+    python scripts/plot_slimmed_spectra.py ... --absolute \\
+        --normalise "Pseudo-events" --norm-from njet
+
+Mass spectra are deliberately not plotted here - this script is kinematics.
+``h_m6j`` and ``h_hemi_mass`` are skipped unless named explicitly in
+``--observables``; for tri-jet candidate masses use plot_mass_spectra.py.
 """
 
 import argparse
@@ -44,6 +52,17 @@ import matplotlib.pyplot as plt  # noqa: E402
 #: Observables that are counts of things and read better on a linear y. Every
 #: other spectrum here falls steeply enough to want log.
 LINEAR_OBSERVABLES = {"njet"}
+
+#: Mass spectra, skipped by default: this script is kinematics, and the mass
+#: distributions have their own script (plot_mass_spectra.py) with the model
+#: splitting they need. Naming one in --observables still plots it.
+MASS_OBSERVABLES = {"h_m6j", "h_hemi_mass", "h_mass"}
+
+#: Cutflows are counters over a StrCategory axis, not spectra: overlaying them
+#: on shared axes says nothing, and normalising one to unit area says less.
+#: Named explicitly in --observables they are still plotted.
+def _is_cutflow(key):
+    return "cutflow" in key
 
 #: Axis labels for the observables these two fillers write; anything else falls
 #: back to its own key.
@@ -86,7 +105,7 @@ def integral(h, lo=None):
     return getattr(s, "value", s)
 
 
-def draw(ax, h, scale, label, colour, lo=None):
+def draw(ax, h, scale, label, colour, lo=None, density=True):
     """Step outline plus a stat-error band."""
     if lo is not None:
         h = h[complex(0, lo):]
@@ -96,6 +115,16 @@ def draw(ax, h, scale, label, colour, lo=None):
     # No Sumw2 means unweighted fills, where the variance is the count itself.
     variances = (variances if variances is not None else h.values()) * scale**2
     errors = np.sqrt(variances)
+    if density:
+        widths = np.diff(edges)
+        if not np.allclose(widths, widths[0]):
+            raise SystemExit(
+                f"{label}: area normalisation assumes uniform bins, but this "
+                "axis has varying widths. Divide by np.diff(edges) instead."
+            )
+        norm = values.sum() * widths[0]
+        if norm > 0:
+            values, errors = values / norm, errors / norm
     ax.stairs(values, edges, label=label, color=colour)
     pad = lambda a: np.append(a, a[-1])   # step="post" needs len(edges) points
     ax.fill_between(edges, pad(values - errors), pad(values + errors),
@@ -111,10 +140,16 @@ def main(argv=None):
                         "output files to overlay")
     p.add_argument("--label", nargs="+", default=None, metavar="NAME",
                    help="legend name per input (default: the file stem)")
+    p.add_argument("--absolute", action="store_true",
+                   help="plot weighted entries instead of normalising each "
+                        "curve to unit area. Only meaningful when the samples' "
+                        "weights are already on a common footing, or together "
+                        "with --normalise.")
     p.add_argument("--normalise", nargs="+", default=(), metavar="LABEL",
-                   help="scale these curves to the reference's integral. Use "
-                        "it for anything whose absolute normalisation is not "
-                        "comparable - pseudo-events above all.")
+                   help="with --absolute: scale these curves to the "
+                        "reference's integral, by one factor from --norm-from "
+                        "applied to every observable. Cancels under area "
+                        "normalisation, so it requires --absolute.")
     p.add_argument("--ref", default=None, metavar="LABEL",
                    help="the curve --normalise scales to (default: the first "
                         "input)")
@@ -124,7 +159,9 @@ def main(argv=None):
                         "to every observable.")
     p.add_argument("--observables", nargs="+", default=None, metavar="OBS",
                    help="which to plot (default: every histogram present in at "
-                        "least two inputs)")
+                        f"least two inputs, except the mass spectra "
+                        f"{sorted(MASS_OBSERVABLES)}, which belong to "
+                        "plot_mass_spectra.py. Naming one here plots it.)")
     p.add_argument("--xmin", nargs="+", default=(), metavar="OBS=VALUE",
                    help="restrict an observable's range, e.g. ht=550. When it "
                         "is also --norm-from, the factor is computed over the "
@@ -165,6 +202,12 @@ def main(argv=None):
     unknown = [l for l in args.normalise if l not in by_label]
     if unknown:
         sys.exit(f"--normalise names {unknown}, which are not among {labels}")
+    if args.normalise and not args.absolute:
+        sys.exit(
+            "--normalise scales curves by a constant, which cancels when every "
+            "curve is normalised to unit area - it would do nothing. Add "
+            "--absolute to plot weighted entries, or drop --normalise."
+        )
 
     # Scale factors, from one observable, applied everywhere.
     scales = {label: 1.0 for label in labels}
@@ -194,7 +237,16 @@ def main(argv=None):
         for h in hists:
             for key in h:
                 counts[key] = counts.get(key, 0) + 1
-        observables = sorted(k for k, c in counts.items() if c >= 2)
+        shared = sorted(k for k, c in counts.items() if c >= 2)
+        observables = [k for k in shared
+                       if k not in MASS_OBSERVABLES and not _is_cutflow(k)]
+        masses = [k for k in shared if k in MASS_OBSERVABLES]
+        if masses:
+            print(f"[skip] mass spectra, not kinematics: {masses} "
+                  "(plot_mass_spectra.py, or name them in --observables)")
+        cutflows = [k for k in shared if _is_cutflow(k)]
+        if cutflows:
+            print(f"[skip] cutflows, not spectra: {cutflows}")
         singles = sorted(k for k, c in counts.items() if c < 2)
         if singles:
             print(f"[skip] in only one input, nothing to compare: {singles}")
@@ -214,7 +266,8 @@ def main(argv=None):
         fig, ax = plt.subplots(figsize=(8, 5))
         for label in have:
             draw(ax, by_label[label][obs], scales[label], label,
-                 COLOURS[labels.index(label)], xmin.get(obs))
+                 COLOURS[labels.index(label)], xmin.get(obs),
+                 density=not args.absolute)
         log = obs not in LINEAR_OBSERVABLES
         if obs in args.linear:
             log = False
@@ -223,7 +276,8 @@ def main(argv=None):
         if log:
             ax.set_yscale("log")
         ax.set_xlabel(XLABELS.get(obs, obs))
-        ax.set_ylabel("weighted entries")
+        ax.set_ylabel("weighted entries" if args.absolute
+                      else "a.u. (unit area)")
         ax.set_title(obs + (f"  ($\\geq$ {xmin[obs]:g})" if obs in xmin else ""))
         ax.legend()
         out = outdir / f"{obs}.{args.format}"
