@@ -33,6 +33,16 @@ are mutually exclusive and saying both is an error rather than a silent no-op.
     python scripts/plot_slimmed_spectra.py ... --absolute \\
         --normalise "Pseudo-events" --norm-from njet
 
+``--ratio`` adds a lower panel to every figure holding the second input
+divided by the first, bin by bin, taken from the curves exactly as drawn above
+it: a ratio of shapes under the default area normalisation, of weighted entries
+under ``--absolute``. A ratio needs one unambiguous denominator, so the base is
+always the first input and the option refuses anything but two files.
+
+    python scripts/plot_slimmed_spectra.py \\
+        qcd6_spectra.root mixed_spectra.root \\
+        --label "6 jets" "Pseudo-events" --ratio -o plots/
+
 Mass spectra are deliberately not plotted here - this script is kinematics.
 ``h_m6j`` and ``h_hemi_mass`` are skipped unless named explicitly in
 ``--observables``; for tri-jet candidate masses use plot_mass_spectra.py.
@@ -106,7 +116,11 @@ def integral(h, lo=None):
 
 
 def draw(ax, h, scale, label, colour, lo=None, density=True):
-    """Step outline plus a stat-error band."""
+    """Step outline plus a stat-error band; returns ``(edges, values, errors)``.
+
+    The return value is what landed on the axes, normalisation included, so a
+    ratio panel built from it divides the curves the reader is looking at.
+    """
     if lo is not None:
         h = h[complex(0, lo):]
     edges = h.axes[0].edges
@@ -129,6 +143,35 @@ def draw(ax, h, scale, label, colour, lo=None, density=True):
     pad = lambda a: np.append(a, a[-1])   # step="post" needs len(edges) points
     ax.fill_between(edges, pad(values - errors), pad(values + errors),
                     step="post", color=colour, alpha=0.2, linewidth=0)
+    return edges, values, errors
+
+
+def draw_ratio(ax, base, other, colour):
+    """``other / base`` bin by bin, from two ``draw`` return values.
+
+    Errors add in quadrature: the samples are independent, so there is no
+    correlation to cancel. Bins the base leaves empty have no defined ratio and
+    are left as gaps rather than filled with a zero or an infinity.
+    """
+    edges, base_values, base_errors = base
+    _, values, errors = other
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = np.where(base_values > 0, values / base_values, np.nan)
+        rel = (np.where(values > 0, (errors / values) ** 2, 0.0)
+               + np.where(base_values > 0, (base_errors / base_values) ** 2, 0.0))
+        e = np.abs(r) * np.sqrt(rel)
+    ax.axhline(1.0, color="0.4", linewidth=0.8, linestyle="--", zorder=0)
+    ax.stairs(r, edges, color=colour)
+    pad = lambda a: np.append(a, a[-1])
+    ax.fill_between(edges, pad(r - e), pad(r + e), step="post",
+                    color=colour, alpha=0.2, linewidth=0)
+    # A single wild bin in a falling tail would squash everything else, so take
+    # the limits from the bulk - but always keep 1 in view to compare against.
+    finite = r[np.isfinite(r)]
+    if finite.size:
+        lo, hi = np.percentile(finite, [1, 99])
+        pad_y = 0.1 * max(hi - lo, 0.1)
+        ax.set_ylim(min(lo - pad_y, 1.0), max(hi + pad_y, 1.0))
 
 
 def main(argv=None):
@@ -157,6 +200,10 @@ def main(argv=None):
                    help="observable whose integral sets the scale factor "
                         "(default: %(default)s). One factor per curve, applied "
                         "to every observable.")
+    p.add_argument("--ratio", action="store_true",
+                   help="add a lower panel to every figure with the second "
+                        "input divided by the first, bin by bin, of the curves "
+                        "as drawn. Needs exactly two inputs.")
     p.add_argument("--observables", nargs="+", default=None, metavar="OBS",
                    help="which to plot (default: every histogram present in at "
                         f"least two inputs, except the mass spectra "
@@ -179,6 +226,10 @@ def main(argv=None):
     n = len(args.inputs)
     if args.label and len(args.label) != n:
         sys.exit(f"--label takes one name per input ({n} given)")
+    if args.ratio and n != 2:
+        sys.exit(f"--ratio divides one curve by one base, and takes the first "
+                 f"input as that base, so it wants exactly two inputs "
+                 f"({n} given)")
     if n > len(COLOURS):
         sys.exit(f"{n} inputs is more than the {len(COLOURS)} colours "
                  "available; a repeated colour would read as one curve.")
@@ -263,11 +314,43 @@ def main(argv=None):
             continue
         if len(have) < len(labels):
             print(f"[note] {obs}: only in {have}")
-        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # A ratio needs both curves on the same grid. `have` follows the input
+        # order, so have[0] is the first file whenever both are present.
+        ratio_pair = None
+        if args.ratio:
+            if len(have) < 2:
+                print(f"[skip ratio] {obs}: only in {have}")
+            else:
+                base_edges, other_edges = (by_label[l][obs].axes[0].edges
+                                           for l in have)
+                if (len(base_edges) == len(other_edges)
+                        and np.allclose(base_edges, other_edges)):
+                    ratio_pair = have
+                else:
+                    print(f"[skip ratio] {obs}: the inputs bin it differently, "
+                          f"{len(base_edges) - 1} bins against "
+                          f"{len(other_edges) - 1}")
+
+        if ratio_pair:
+            fig, (ax, ax_ratio) = plt.subplots(
+                2, 1, figsize=(8, 6), sharex=True,
+                gridspec_kw={"height_ratios": (3, 1), "hspace": 0.05})
+        else:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax_ratio = None
+
+        drawn = {}
         for label in have:
-            draw(ax, by_label[label][obs], scales[label], label,
-                 COLOURS[labels.index(label)], xmin.get(obs),
-                 density=not args.absolute)
+            drawn[label] = draw(
+                ax, by_label[label][obs], scales[label], label,
+                COLOURS[labels.index(label)], xmin.get(obs),
+                density=not args.absolute)
+        if ratio_pair:
+            base_label, other_label = ratio_pair
+            draw_ratio(ax_ratio, drawn[base_label], drawn[other_label],
+                       COLOURS[labels.index(other_label)])
+            ax_ratio.set_ylabel(f"ratio to\n{base_label}", fontsize=9)
         log = obs not in LINEAR_OBSERVABLES
         if obs in args.linear:
             log = False
@@ -275,7 +358,7 @@ def main(argv=None):
             log = True
         if log:
             ax.set_yscale("log")
-        ax.set_xlabel(XLABELS.get(obs, obs))
+        (ax_ratio or ax).set_xlabel(XLABELS.get(obs, obs))
         ax.set_ylabel("weighted entries" if args.absolute
                       else "a.u. (unit area)")
         ax.set_title(obs + (f"  ($\\geq$ {xmin[obs]:g})" if obs in xmin else ""))
