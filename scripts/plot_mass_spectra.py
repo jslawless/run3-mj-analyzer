@@ -52,15 +52,41 @@ HIST_KEY_RE = re.compile(r"^h_mass_(.+)$")
 #: added after it.
 COLOURS = plt.get_cmap("tab10").colors
 
+#: Models whose spectrum came from the pSignal projection, for the titles.
+PSIGNAL_CUT_APPLIED = set()
 
-def load_mass_hists(path):
-    """``{model: hist.Hist}`` for every ``h_mass_<Model>`` histogram."""
+
+def psignal_projection(h2, cut):
+    """Mass spectrum of events with pSignal >= ``cut``, from the
+    ``h_psignal_mass_<Model>`` 2D histogram (mass x pSignal). ``cut`` must sit
+    on a pSignal bin edge, or the cut would be silently rounded to one."""
+    edges = h2.axes[1].edges
+    i = np.flatnonzero(np.isclose(edges, cut, rtol=0, atol=1e-9))
+    if not len(i):
+        raise SystemExit(
+            f"--psignal-cut {cut:g} is not a pSignal bin edge; nearest are "
+            f"{edges[np.searchsorted(edges, cut) - 1]:g} and "
+            f"{edges[np.searchsorted(edges, cut)]:g}")
+    return h2[:, int(i[0])::sum]
+
+
+def load_mass_hists(path, psignal_cut=None):
+    """``{model: hist.Hist}`` for every ``h_mass_<Model>`` histogram. With
+    ``psignal_cut``, models that have an ``h_psignal_mass_<Model>`` get the
+    projection at that cut instead; the others keep their ``h_mass``."""
     out = {}
     with uproot.open(path) as f:
-        for key in f.keys(cycle=False):
+        keys = set(f.keys(cycle=False))
+        for key in sorted(keys):
             m = HIST_KEY_RE.match(key)
             if m:
-                out[m.group(1)] = f[key].to_hist()
+                model, key2d = m.group(1), f"h_psignal_mass_{m.group(1)}"
+                if psignal_cut is not None and key2d in keys:
+                    out[model] = psignal_projection(f[key2d].to_hist(),
+                                                    psignal_cut)
+                    PSIGNAL_CUT_APPLIED.add(model)
+                else:
+                    out[model] = f[key].to_hist()
     if not out:
         raise SystemExit(
             f"No h_mass_* histograms in {path} - is it make_histograms.py "
@@ -125,6 +151,14 @@ def main(argv=None):
     p.add_argument("--models", nargs="+", default=None, metavar="MODEL",
                    help="only these models (default: all common to every input)")
     p.add_argument("--xlabel", default="tri-jet invariant mass [GeV]")
+    p.add_argument("--ylabel", default=None,
+                   help="y-axis label (default: 'density' or 'weighted entries')")
+    p.add_argument("--ymin", type=float, default=None,
+                   help="y-axis lower limit (default: matplotlib's choice)")
+    p.add_argument("--psignal-cut", type=float, default=None, metavar="P",
+                   help="for models with an h_psignal_mass_* histogram (the "
+                        "PairNets), plot only events with pSignal >= P. P must "
+                        "be a pSignal bin edge. Other models are unchanged.")
     p.add_argument("--dpi", type=int, default=150)
     args = p.parse_args(argv)
 
@@ -139,7 +173,7 @@ def main(argv=None):
     labels = args.label or [Path(f).stem for f in args.inputs]
     scales = args.scale or [1.0] * n
 
-    hists = [load_mass_hists(f) for f in args.inputs]
+    hists = [load_mass_hists(f, args.psignal_cut) for f in args.inputs]
     common = set(hists[0])
     for h in hists[1:]:
         common &= set(h)
@@ -176,9 +210,13 @@ def main(argv=None):
                   f"{integral(hist_set[model]) * scale:>14.6g}")
         if not args.linear:
             ax.set_yscale("log")
+        if args.ymin is not None:
+            ax.set_ylim(bottom=args.ymin)
         ax.set_xlabel(args.xlabel)
-        ax.set_ylabel("density" if args.density else "weighted entries")
-        ax.set_title(model)
+        ax.set_ylabel(args.ylabel or
+                      ("density" if args.density else "weighted entries"))
+        ax.set_title(model + (f"  (pSignal >= {args.psignal_cut:g})"
+                              if model in PSIGNAL_CUT_APPLIED else ""))
         ax.legend()
         out = outdir / f"mass_{model}.{args.format}"
         fig.savefig(out, dpi=args.dpi, bbox_inches="tight")

@@ -12,6 +12,14 @@ exactly ``N_JETS_CUT`` reconstructed jets (set it to -1 to drop that cut) and
 ``HT > HT_CUT``. All histograms land in a single output ROOT file as TH1D
 (with Sumw2), named ``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
 
+Models that also score the event - the PairNets write a per-event
+``{Model}Candidate_pSignal`` - get two more histograms, both after the
+mass-asymmetry cut: ``h_psignal_<Model>`` (TH1D) and ``h_psignal_mass_<Model>``
+(TH2D, mass x pSignal). The 2D one is what makes a pSignal cut choosable after
+the fact: sum its pSignal bins above any edge to get the mass spectrum at that
+cut, with no rerun over the inputs. ``P_SIGNAL_CUT`` additionally applies a
+fixed cut to those models' ``h_mass`` (off by default).
+
 Two input modes:
 
   * one or more evaluated ``.root`` files (e.g. a TTto4Q sample): unweighted.
@@ -125,7 +133,26 @@ HT_CUT = 550.0
 # cut entirely (every jet multiplicity kept, and no cutflow bin for it). Like
 # HT_CUT this is event-level and not per-model, so it is applied once to every
 # histogram in the book. Same name/meaning as fill_qcd_slimming.py's constant.
-N_JETS_CUT = 6
+N_JETS_CUT = -1
+
+# Signal-probability cut for models that write a per-event
+# {Model}Candidate_pSignal (the PairNets): their mass histogram keeps only events
+# with pSignal >= this, on top of the mass-asymmetry cut. Models without the
+# branch are unaffected. Set to -1 to disable. Off until a working point has
+# been read off the h_psignal_mass_* histograms on CMS samples - the PairNet
+# working points were set on a Pythia testbed and do not carry over.
+P_SIGNAL_CUT = -1
+
+# pSignal axis edges, fine near 1: signal piles up within 1e-2 of it, so a
+# uniform axis would put nearly all of it in the last bin. 0.01 steps to 0.9,
+# then 1e-3 to 0.99, 1e-4 to 0.999 and 1e-5 to 1, so every cut on that grid
+# falls on a bin edge.
+PSIGNAL_EDGES = np.unique(np.round(np.concatenate([
+    np.linspace(0.0, 0.9, 91),
+    np.linspace(0.9, 0.99, 91),
+    np.linspace(0.99, 0.999, 91),
+    np.linspace(0.999, 1.0, 101),
+]), 6))
 
 # Event-level branches read in addition to the candidate collections. Extend
 # this when a future (non-per-model) histogram def needs them. "HT" is also
@@ -171,10 +198,12 @@ class HistDef:
     events.
     """
 
-    axis: object  # hist axis, shared by every instance of this family
-    values: callable  # (events, model) -> one fill value per event
+    axis: object  # hist axis, or a tuple of axes for an N-D family
+    values: callable  # (events, model) -> one fill value per event (a tuple
+    #                    of such arrays, one per axis, for an N-D family)
     per_model: bool = True  # instantiate per candidate collection vs. once
     mask: callable = None  # (events, model) -> per-event bool, or None for all
+    requires: str = None  # per-model branch suffix; models without it are skipped
 
 
 def _ht_pass(events):
@@ -199,6 +228,31 @@ def _mass_asym_pass(events, model):
     return events[f"{model}Candidate_massAsymmetry"] < MASS_ASYM_CUT
 
 
+def _has_psignal(events, model):
+    """Whether this model writes a per-event ``{model}Candidate_pSignal``."""
+    return f"{model}Candidate_pSignal" in events.fields
+
+
+def _psignal(events, model):
+    """The model's per-event signal probability. Clipped just below 1: float32
+    scores round to exactly 1.0 for confident events, and the axis's upper edge
+    is exclusive, so they would otherwise land in the overflow."""
+    return np.clip(events[f"{model}Candidate_pSignal"], 0.0, 1.0 - 1e-9)
+
+
+def _psignal_pass(events, model):
+    """Per-event boolean mask: pSignal at or above ``P_SIGNAL_CUT``, or all-True
+    when the cut is disabled or the model writes no pSignal."""
+    if P_SIGNAL_CUT < 0 or not _has_psignal(events, model):
+        return ak.ones_like(events["HT"], dtype=bool)
+    return events[f"{model}Candidate_pSignal"] >= P_SIGNAL_CUT
+
+
+def _mass_pass(events, model):
+    """The mass histogram's selection: mass asymmetry, then pSignal."""
+    return _mass_asym_pass(events, model) & _psignal_pass(events, model)
+
+
 def _avg_candidate_mass(events, model):
     """Per-event average of the two candidate tri-jet masses.
 
@@ -221,14 +275,32 @@ def _has_jets(events, model):
 
 def histogram_defs(args):
     """Every histogram this script produces. Add new entries here."""
+    mass_axis = hist.axis.Regular(
+        args.bins, *args.range, name="mass",
+        label="average tri-jet candidate mass [GeV]",
+    )
+    psignal_axis = hist.axis.Variable(PSIGNAL_EDGES, name="psignal",
+                                      label="p_{signal}")
     return {
         "mass": HistDef(
-            axis=hist.axis.Regular(
-                args.bins, *args.range, name="mass",
-                label="average tri-jet candidate mass [GeV]",
-            ),
+            axis=mass_axis,
             values=_avg_candidate_mass,
+            mask=_mass_pass,
+        ),
+        # Both pSignal families stop at the mass-asymmetry cut and never apply
+        # P_SIGNAL_CUT, so they show the full distribution a cut is chosen from.
+        "psignal": HistDef(
+            axis=psignal_axis,
+            values=_psignal,
             mask=_mass_asym_pass,
+            requires="Candidate_pSignal",
+        ),
+        "psignal_mass": HistDef(
+            axis=(mass_axis, psignal_axis),
+            values=lambda events, model: (_avg_candidate_mass(events, model),
+                                          _psignal(events, model)),
+            mask=_mass_asym_pass,
+            requires="Candidate_pSignal",
         ),
         "ht": HistDef(
             axis=hist.axis.Regular(150, 0.0, 3000.0, name="ht",
@@ -274,33 +346,44 @@ class HistogramBook:
             weight = np.asarray(weight)[ak.to_numpy(keep)]
         for dname, hdef in self.defs.items():
             for model in models if hdef.per_model else [None]:
+                if hdef.requires and f"{model}{hdef.requires}" not in events.fields:
+                    continue
                 key = f"{dname}_{model}" if model else dname
+                axes = hdef.axis if isinstance(hdef.axis, tuple) else (hdef.axis,)
                 h = self.hists.get(key)
                 if h is None:
                     h = self.hists[key] = hist.Hist(
-                        hdef.axis, storage=hist.storage.Weight()
+                        *axes, storage=hist.storage.Weight()
                     )
                 values = hdef.values(events, model)
+                if len(axes) == 1:
+                    values = (values,)
                 w = weight
                 if hdef.mask is not None:
                     sel = hdef.mask(events, model)
-                    values = values[sel]
+                    values = tuple(v[sel] for v in values)
                     if not np.isscalar(w):
                         w = w[ak.to_numpy(sel)]
-                values = ak.to_numpy(ak.drop_none(values))
-                if not np.isscalar(w) and len(w) != len(values):
+                values = tuple(ak.to_numpy(ak.drop_none(v)) for v in values)
+                if len({len(v) for v in values}) > 1:
+                    raise SystemExit(
+                        f"h_{key}: axes got {[len(v) for v in values]} fill "
+                        "values. Every axis needs one value per event; move "
+                        "any selection into the def's mask=."
+                    )
+                if not np.isscalar(w) and len(w) != len(values[0]):
                     # Never fall back to unit weights here: for mixed
                     # pseudo-events xs_weight spans orders of magnitude, so a
                     # silently unweighted histogram would look plausible and be
                     # wrong. A values function that drops events without saying
                     # so through its mask is the bug; say which one.
                     raise SystemExit(
-                        f"h_{key}: {len(values)} fill values but {len(w)} "
+                        f"h_{key}: {len(values[0])} fill values but {len(w)} "
                         "weights. The values function for this def drops "
                         "events; move that selection into the def's mask= so "
                         "the weights can be cut with it."
                     )
-                h.fill(values, weight=w)
+                h.fill(*values, weight=w)
 
     def write(self, path, extra=None):
         """Write all histograms, plus any ``extra`` named objects (the
@@ -474,6 +557,8 @@ def main():
         f"event cuts: njet cut disabled (N_JETS_CUT = {N_JETS_CUT}) | "
         f"HT > {HT_CUT:g} GeV"
     )
+    print(f"pSignal cut on h_mass (models with a pSignal branch): "
+          + (f">= {P_SIGNAL_CUT:g}" if P_SIGNAL_CUT >= 0 else "disabled"))
 
     all_models, n_events, n_skipped = set(), 0, 0
     per_dataset = {}  # dataset -> [n_files, n_events, weight]
@@ -486,6 +571,7 @@ def main():
     n_pass_njet = 0.0     # events passing the jet-count cut
     n_pass_ht = 0.0       # events passing the jet-count cut and then the HT cut
     n_pass_asym = {}      # model -> events passing njet + HT + mass asymmetry
+    n_pass_psig = {}      # model -> ... and then P_SIGNAL_CUT (when enabled)
     event_weighted = set()      # datasets whose weights came from the file
     sum_event_weight = {}       # dataset -> summed per-event weight, all events
     t0 = time.monotonic()
@@ -603,6 +689,10 @@ def main():
                     n_pass_asym[m] = n_pass_asym.get(m, 0.0) + float(
                         ak.sum(_mass_asym_pass(events, m) & event_pass)
                     )
+                    if P_SIGNAL_CUT >= 0 and _has_psignal(events, m):
+                        n_pass_psig[m] = n_pass_psig.get(m, 0.0) + float(
+                            ak.sum(_mass_pass(events, m) & event_pass)
+                        )
                 n_file += len(events)
                 if event_bar is not None:
                     event_bar.update(len(events))
@@ -686,6 +776,9 @@ def main():
     for m in sorted(all_models):
         labels.append(f"mass asym < {MASS_ASYM_CUT:g} [{m}]")
         values.append(n_pass_asym.get(m, 0.0))
+    for m in sorted(n_pass_psig):
+        labels.append(f"pSignal >= {P_SIGNAL_CUT:g} [{m}]")
+        values.append(n_pass_psig[m])
     cutflow = hist.Hist(
         hist.axis.StrCategory(labels), storage=hist.storage.Double()
     )
