@@ -84,7 +84,8 @@ CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
 
 # Keep only events whose two candidate tri-jets agree in mass: |m1-m2|/|m1+m2|
 # below this. Both candidates of a surviving event are then histogrammed.
-MASS_ASYM_CUT = 0.3
+# 0.1 since 2026-11-13 (was 0.3), matching make_histograms.py.
+MASS_ASYM_CUT = 0.1
 
 # Event-level branches read in addition to the candidate collections. Extend
 # this when a future (non-per-model) histogram def needs them.

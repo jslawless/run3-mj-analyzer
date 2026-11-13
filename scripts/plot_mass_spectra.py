@@ -31,6 +31,22 @@ sample is put on the same footing as the weighted ones: the notebook's
 
     python scripts/plot_mass_spectra.py qcd.root ttbar.root \\
         --label QCD ttbar --scale 1.0 3.2e-5 -o plots/
+
+``--ratio`` adds a lower panel holding every other input divided by the
+first, bin by bin, from the curves exactly as drawn (plot_slimmed_spectra.py's
+``draw_ratio``), and prints a chi2/ndf of each against it. That is the mixing
+closure test: the exactly-6-jet QCD reference first, pseudo-events after.
+
+    python scripts/plot_mass_spectra.py qcd_njet6.root mixed.root \\
+        --label "QCD, 6 jets" "Pseudo-events" --density --linear --ratio \\
+        --rebin 2 -o plots/closure/
+
+The chi2 adds the two inputs' errors in quadrature over the bins where both
+are filled. Under ``--density`` it compares shapes and ``ndf`` is one less
+than that bin count, for the normalisation the area scaling fixed. It ignores
+any bin-to-bin correlation, and the pseudo-events have some: one hemisphere is
+never reused, but one parent event contributes both of its hemispheres to
+different pseudo-events. Read it as a guide, not a p-value.
 """
 
 import argparse
@@ -38,12 +54,18 @@ import re
 import sys
 from pathlib import Path
 
+import hist
 import matplotlib
 import numpy as np
 import uproot
 
 matplotlib.use("Agg")           # write files; never needs a display
 import matplotlib.pyplot as plt  # noqa: E402
+
+# The ratio panel is plot_slimmed_spectra.py's, imported rather than re-typed so
+# the two scripts' ratios cannot drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from plot_slimmed_spectra import draw_ratio  # noqa: E402
 
 HIST_KEY_RE = re.compile(r"^h_mass_(.+)$")
 
@@ -102,7 +124,8 @@ def integral(h):
 
 
 def step_with_band(ax, h, scale, label, colour, density=False):
-    """Step outline plus a stat-error band. Returns the plotted values."""
+    """Step outline plus a stat-error band. Returns ``(edges, values, errors)``
+    as plotted, normalisation included, so a ratio divides what is drawn."""
     edges = h.axes[0].edges
     values = h.values() * scale
     variances = h.variances()
@@ -123,7 +146,20 @@ def step_with_band(ax, h, scale, label, colour, density=False):
     pad = lambda a: np.append(a, a[-1])   # step="post" needs len(edges) points
     ax.fill_between(edges, pad(values - errors), pad(values + errors),
                     step="post", color=colour, alpha=0.2, linewidth=0)
-    return values
+    return edges, values, errors
+
+
+def shape_chi2(base, other, density):
+    """``(chi2, ndf)`` of ``other`` against ``base``, two ``step_with_band``
+    return values, over the bins where both are filled. Under ``density`` the
+    area normalisation is a fitted constraint, so it costs one degree of
+    freedom."""
+    _, b, eb = base
+    _, v, ev = other
+    used = (b > 0) & (v > 0)
+    chi2 = float(np.sum((v[used] - b[used]) ** 2
+                        / (eb[used] ** 2 + ev[used] ** 2)))
+    return chi2, int(used.sum()) - (1 if density else 0)
 
 
 def main(argv=None):
@@ -159,6 +195,17 @@ def main(argv=None):
                    help="for models with an h_psignal_mass_* histogram (the "
                         "PairNets), plot only events with pSignal >= P. P must "
                         "be a pSignal bin edge. Other models are unchanged.")
+    p.add_argument("--ratio", action="store_true",
+                   help="lower panel: every other input divided by the first, "
+                        "plus a printed chi2/ndf of each against it")
+    p.add_argument("--ratio-range", type=float, nargs=2, default=None,
+                   metavar=("LO", "HI"),
+                   help="ratio-panel y limits (default: from the bulk of the "
+                        "ratio, always keeping 1 in view)")
+    p.add_argument("--rebin", type=int, default=1, metavar="N",
+                   help="merge every N mass bins before plotting (default: "
+                        "%(default)s); the low-stat tails of xsec-weighted QCD "
+                        "are otherwise a few events per bin")
     p.add_argument("--dpi", type=int, default=150)
     args = p.parse_args(argv)
 
@@ -170,10 +217,16 @@ def main(argv=None):
     if n > len(COLOURS):
         sys.exit(f"{n} inputs is more than the {len(COLOURS)} colours "
                  "available; a repeated colour would read as one curve.")
+    if args.ratio and n < 2:
+        sys.exit("--ratio divides the other inputs by the first, so it needs "
+                 "at least two")
     labels = args.label or [Path(f).stem for f in args.inputs]
     scales = args.scale or [1.0] * n
 
     hists = [load_mass_hists(f, args.psignal_cut) for f in args.inputs]
+    if args.rebin > 1:
+        hists = [{m: h[::hist.rebin(args.rebin)] for m, h in hs.items()}
+                 for hs in hists]
     common = set(hists[0])
     for h in hists[1:]:
         common &= set(h)
@@ -200,19 +253,43 @@ def main(argv=None):
     # actual normalisation is visible is here.
     width = max(len(s) for s in labels)
     print(f"\n{'model':<20} {'input':<{width}} {'integral':>14}")
+    chi2_rows = []
     for model in models:
-        fig, ax = plt.subplots(figsize=(8, 5))
+        if args.ratio:
+            fig, (ax, ax_ratio) = plt.subplots(
+                2, 1, figsize=(8, 6), sharex=True,
+                gridspec_kw={"height_ratios": (3, 1), "hspace": 0.05})
+        else:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax_ratio = None
+        drawn = []
         for i, (label, hist_set, scale) in enumerate(
                 zip(labels, hists, scales)):
-            step_with_band(ax, hist_set[model], scale, label, COLOURS[i],
-                           args.density)
+            drawn.append(step_with_band(ax, hist_set[model], scale, label,
+                                        COLOURS[i], args.density))
             print(f"{model:<20} {label:<{width}} "
                   f"{integral(hist_set[model]) * scale:>14.6g}")
+        if ax_ratio is not None:
+            if not all(len(d[0]) == len(drawn[0][0])
+                       and np.allclose(d[0], drawn[0][0]) for d in drawn):
+                sys.exit(f"{model}: the inputs bin the mass differently, so "
+                         "there is no bin-by-bin ratio")
+            text = []
+            for i in range(1, n):
+                draw_ratio(ax_ratio, drawn[0], drawn[i], COLOURS[i])
+                chi2, ndf = shape_chi2(drawn[0], drawn[i], args.density)
+                chi2_rows.append((model, labels[i], chi2, ndf))
+                text.append(f"{labels[i]}: $\\chi^2$/ndf = {chi2:.1f}/{ndf}")
+            if args.ratio_range:
+                ax_ratio.set_ylim(*args.ratio_range)
+            ax_ratio.set_ylabel(f"ratio to\n{labels[0]}", fontsize=9)
+            ax_ratio.text(0.01, 0.95, "\n".join(text), fontsize=8,
+                          transform=ax_ratio.transAxes, va="top")
         if not args.linear:
             ax.set_yscale("log")
         if args.ymin is not None:
             ax.set_ylim(bottom=args.ymin)
-        ax.set_xlabel(args.xlabel)
+        (ax_ratio or ax).set_xlabel(args.xlabel)
         ax.set_ylabel(args.ylabel or
                       ("density" if args.density else "weighted entries"))
         ax.set_title(model + (f"  (pSignal >= {args.psignal_cut:g})"
@@ -222,6 +299,13 @@ def main(argv=None):
         fig.savefig(out, dpi=args.dpi, bbox_inches="tight")
         plt.close(fig)
         print(f"-> {out}")
+
+    if chi2_rows:
+        print(f"\n{'model':<20} {'input':<{width}} {'chi2/ndf':>14}  "
+              f"(against {labels[0]})")
+        for model, label, chi2, ndf in chi2_rows:
+            print(f"{model:<20} {label:<{width}} "
+                  f"{f'{chi2:.1f}/{ndf}':>14}")
     return 0
 
 

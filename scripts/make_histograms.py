@@ -8,7 +8,7 @@ in the input files - no hardcoded model list - and fills, per model, the
 tri-jet mass spectrum: for events whose two candidates agree in mass
 (asymmetry ``|m1-m2|/|m1+m2| < MASS_ASYM_CUT``), the per-event average of the
 two candidate masses. Every histogram is additionally restricted to events with
-exactly ``N_JETS_CUT`` reconstructed jets (set it to -1 to drop that cut) and
+exactly ``N_JETS_CUT`` reconstructed jets (``--njets``; -1 drops that cut) and
 ``HT > HT_CUT``. All histograms land in a single output ROOT file as TH1D
 (with Sumw2), named ``h_<histogram>_<Model>``, e.g. ``h_mass_SPANet``.
 
@@ -118,8 +118,9 @@ CANDIDATE_MASS_RE = re.compile(r"^(.+)Candidate_mass$")
 # Keep only events whose two candidate tri-jets agree in mass: |m1-m2|/|m1+m2|
 # below this. The asymmetry itself is read from the evaluator's per-model
 # {Model}Candidate_massAsymmetry branch; the mass histogram is then filled with
-# the per-event average of the two candidate masses.
-MASS_ASYM_CUT = 0.3
+# the per-event average of the two candidate masses. 0.1 since 2026-11-13 (was
+# 0.3); --mass-asym-cut overrides it per run.
+MASS_ASYM_CUT = 0.1
 
 # Keep only events above this HT, read from the slimmer's event-level HT branch
 # (already corrected). Tightens the slimmer's looser preselection HT cut onto
@@ -138,10 +139,12 @@ N_JETS_CUT = -1
 # Signal-probability cut for models that write a per-event
 # {Model}Candidate_pSignal (the PairNets): their mass histogram keeps only events
 # with pSignal >= this, on top of the mass-asymmetry cut. Models without the
-# branch are unaffected. Set to -1 to disable. Off until a working point has
-# been read off the h_psignal_mass_* histograms on CMS samples - the PairNet
-# working points were set on a Pythia testbed and do not carry over.
-P_SIGNAL_CUT = -1
+# branch are unaffected. Set to -1 to disable. 0.95 is a first guess, chosen
+# from signal alone (10/28 RPV samples: it keeps ~40-50% of M300 and ~70-85% of
+# M1000 after the mass-asymmetry cut; at 0.99 M300 drops to 8-23%). Replace it
+# with a working point read off the h_psignal_mass_* histograms once QCD is in -
+# the PairNet working points were set on a Pythia testbed and do not carry over.
+P_SIGNAL_CUT = 0.95
 
 # pSignal axis edges, fine near 1: signal piles up within 1e-2 of it, so a
 # uniform axis would put nearly all of it in the last bin. 0.01 steps to 0.9,
@@ -479,6 +482,10 @@ def resolve_jobs(args):
 
 
 def main():
+    # --njets and --mass-asym-cut override the module constants; the masks
+    # read them at call time, so the cuts then apply everywhere they are used -
+    # histograms and cutflow alike.
+    global N_JETS_CUT, MASS_ASYM_CUT
     parser = argparse.ArgumentParser(
         description="Per-model tri-jet mass spectra from evaluator output, "
         "written as TH1D to a single ROOT file. Works on a plain sample "
@@ -535,8 +542,20 @@ def main():
     parser.add_argument("--inspect-workers", type=int, default=16,
                         help="threads for the up-front per-file tree/cutflow "
                         "inspection in dataset-JSON mode (default: %(default)s)")
+    parser.add_argument("--njets", type=int, default=N_JETS_CUT, metavar="N",
+                        help="keep only events with exactly N jets, -1 for no "
+                        "jet-count cut (default: N_JETS_CUT = %(default)s). 6 "
+                        "gives the QCD reference for mixed pseudo-events, "
+                        "which have exactly 6 jets by construction.")
+    parser.add_argument("--mass-asym-cut", type=float, default=MASS_ASYM_CUT,
+                        metavar="A",
+                        help="keep events whose two candidates have "
+                        "|m1-m2|/|m1+m2| < A (default: MASS_ASYM_CUT = "
+                        "%(default)s)")
     args = parser.parse_args()
     use_bars = tqdm is not None and not args.no_progress
+    N_JETS_CUT = args.njets
+    MASS_ASYM_CUT = args.mass_asym_cut
 
     jobs, n_original = resolve_jobs(args)
     # Datasets whose n_original wasn't known up front (no weighted inspection
@@ -557,6 +576,8 @@ def main():
         f"event cuts: njet cut disabled (N_JETS_CUT = {N_JETS_CUT}) | "
         f"HT > {HT_CUT:g} GeV"
     )
+    print(f"mass asymmetry cut (every per-model histogram): < "
+          f"{MASS_ASYM_CUT:g}")
     print(f"pSignal cut on h_mass (models with a pSignal branch): "
           + (f">= {P_SIGNAL_CUT:g}" if P_SIGNAL_CUT >= 0 else "disabled"))
 
