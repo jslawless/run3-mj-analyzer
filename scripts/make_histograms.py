@@ -493,7 +493,7 @@ def main():
     # --njets and --mass-asym-cut override the module constants; the masks
     # read them at call time, so the cuts then apply everywhere they are used -
     # histograms and cutflow alike.
-    global N_JETS_CUT, MASS_ASYM_CUT
+    global N_JETS_CUT, MASS_ASYM_CUT, P_SIGNAL_CUT
     parser = argparse.ArgumentParser(
         description="Per-model tri-jet mass spectra from evaluator output, "
         "written as TH1D to a single ROOT file. Works on a plain sample "
@@ -560,6 +560,11 @@ def main():
                         help="keep events whose two candidates have "
                         "|m1-m2|/|m1+m2| < A (default: MASS_ASYM_CUT = "
                         "%(default)s)")
+    parser.add_argument("--psignal-cut", type=float, default=P_SIGNAL_CUT,
+                        metavar="P",
+                        help="pSignal cut on the h_mass of models that write "
+                        "a pSignal; negative disables it (default: "
+                        "P_SIGNAL_CUT = %(default)s)")
     parser.add_argument("--signal-file-id-min", type=int, default=None,
                         metavar="ID",
                         help="signal-injection pseudo-events: a half whose "
@@ -573,6 +578,7 @@ def main():
     use_bars = tqdm is not None and not args.no_progress
     N_JETS_CUT = args.njets
     MASS_ASYM_CUT = args.mass_asym_cut
+    P_SIGNAL_CUT = args.psignal_cut
 
     jobs, n_original = resolve_jobs(args)
     # Datasets whose n_original wasn't known up front (no weighted inspection
@@ -614,6 +620,11 @@ def main():
     n_pass_ht = 0.0       # events passing the jet-count cut and then the HT cut
     n_pass_asym = {}      # model -> events passing njet + HT + mass asymmetry
     n_pass_psig = {}      # model -> ... and then P_SIGNAL_CUT (when enabled)
+    # --signal-file-id-min: unweighted entries per pair type, after the event
+    # cuts ("events", what the per-event histograms see) and after each
+    # model's h_mass selection ("mass"). Weighted sums can't tell 3 heavy
+    # events from 3000 light ones, so the plots quote these as well.
+    raw_counts = {t: {"events": 0, "mass": {}} for t in PAIR_TYPES}
     event_weighted = set()      # datasets whose weights came from the file
     sum_event_weight = {}       # dataset -> summed per-event weight, all events
     t0 = time.monotonic()
@@ -731,11 +742,20 @@ def main():
                     n_sig = sum(
                         (ak.to_numpy(events[b]) >= args.signal_file_id_min)
                         .astype(int) for b in PARENT_FILE_BRANCHES)
+                    ev_pass = ak.to_numpy(_njet_pass(events)
+                                          & _ht_pass(events))
+                    mass_pass = {m: ak.to_numpy(_mass_pass(events, m))
+                                 for m in models}
                     for n, t in enumerate(PAIR_TYPES):
                         sel = n_sig == n
                         type_books[t].fill(
                             events[sel], models,
                             w if np.isscalar(w) else w[sel])
+                        rc = raw_counts[t]
+                        rc["events"] += int((sel & ev_pass).sum())
+                        for m in models:
+                            rc["mass"][m] = rc["mass"].get(m, 0) + int(
+                                (sel & ev_pass & mass_pass[m]).sum())
                 else:
                     book.fill(events, models, w)
                 njet_pass = _njet_pass(events)
@@ -818,7 +838,14 @@ def main():
         extra["pair_split"] = json.dumps({
             "signal_file_id_min": args.signal_file_id_min,
             "weight_power": args.weight_power,
-            "types": list(PAIR_TYPES)})
+            "psignal_cut": P_SIGNAL_CUT,
+            "mass_asym_cut": MASS_ASYM_CUT,
+            "types": list(PAIR_TYPES),
+            "raw_counts": raw_counts})
+        print("\nraw entries per pair type (after event cuts | h_mass):")
+        for t, rc in raw_counts.items():
+            per_m = ", ".join(f"{m} {n:,}" for m, n in sorted(rc["mass"].items()))
+            print(f"  {t}: {rc['events']:,} | {per_m}")
     if sum_event_weight:
         extra["sum_event_weight"] = json.dumps(sum_event_weight)
 
