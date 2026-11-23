@@ -41,6 +41,14 @@ Observables: ``mass_<Model>`` (average tri-jet candidate mass, one per model),
   scan_table.json      the numbers behind both summaries.
   sqcompare_<obs>.pdf  only with --compare-sq OTHER: this file's SQ shape vs
                        OTHER's (e.g. x1 vs x4), unit area, ratio below.
+  noninj_<obs>.pdf     only with --reference FILE: the non-injected mixed
+                       sample (a plain make_histograms.py output, no pair
+                       split) against this study's mu = 0, i.e. its QQ pairs.
+                       Ideally identical; adding signal rows to the index
+                       changes the matcher's draw sequence and uses up some
+                       QCD hemispheres on signal partners, so the QQ pairings
+                       differ. Absolute weighted entries (not unit area),
+                       ratio below.
 
 chi2/ndf uses the mu = 0 statistical errors only. The mu shapes share all of
 their QQ events with mu = 0, so the difference is purely the signal-containing
@@ -53,7 +61,8 @@ supplies both of its hemispheres).
         --label "M300 x1" --rebin 2 -o plots/M300_x1/
     python scripts/plot_injection_scan.py hists_inject_M300_x4.root \\
         --label "M300 x4" --mu-scale 0.25 --rebin 2 -o plots/M300_x4/ \\
-        --compare-sq hists_inject_M300_x1.root --compare-label "M300 x1"
+        --compare-sq hists_inject_M300_x1.root --compare-label "M300 x1" \\
+        --reference hists_mixed_noninjected.root
 """
 
 import argparse
@@ -300,6 +309,80 @@ def sqcompare_plot(obs, mine, other, label, other_label, outpath):
     plt.close(fig)
 
 
+def load_reference(path):
+    """``{obs: hist}`` from a plain (non-split) make_histograms.py output."""
+    with uproot.open(path) as f:
+        if "pair_split" in f:
+            raise SystemExit(f"{path} is a pair-split file; --reference wants "
+                             "the non-injected mixed sample")
+        out = {}
+        for key in f.keys(cycle=False):
+            if key.startswith("h_") and not key.startswith("h_psignal"):
+                h = f[key].to_hist()
+                if h.ndim == 1:
+                    out[key[2:]] = h
+        # A pSignal cut shows up as "pSignal >= P [Model]" cutflow bins.
+        if "cutflow" in f:
+            labels = f["cutflow"].axis().labels() or []
+            if any(str(lab).startswith("pSignal") for lab in labels):
+                print(f"[warn] {path} was made with a pSignal cut on the "
+                      "PairNet masses; remake it with --psignal-cut -1")
+    return out
+
+
+def noninj_plot(obs, parts, ref, label, ref_label, outpath, logy):
+    """noninj_<obs>: non-injected mixed sample vs this study's mu = 0 (QQ).
+
+    The two share most hemispheres but not their pairings, so they are
+    neither independent nor identical: the ratio errors are added in
+    quadrature (as if independent), which overstates them somewhat. The
+    chi2/ndf printed alongside uses the same errors.
+    """
+    edges = parts["QQ"].axes[0].edges
+    fig, (ax, axr) = plt.subplots(
+        2, 1, figsize=(8, 6), sharex=True,
+        gridspec_kw={"height_ratios": (3, 1), "hspace": 0.05})
+    q, qvar = parts["QQ"].values(), parts["QQ"].variances()
+    r_, rvar = ref.values(), ref.variances()
+    for v, var, lab, colour in ((r_, rvar, ref_label, "tab:blue"),
+                                (q, qvar, f"{label} $\\mu$ = 0 (QQ)",
+                                 REF_COLOUR)):
+        e = np.sqrt(var)
+        ax.stairs(v, edges, color=colour, linewidth=1.4,
+                  label=f"{lab}: $\\Sigma w$ = {v.sum():.4g}")
+        ax.fill_between(edges, pad(np.maximum(v - e, 0)), pad(v + e),
+                        step="post", color=colour, alpha=0.2, linewidth=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = np.where(r_ > 0, q / r_, np.nan)
+        er = np.abs(r) * np.sqrt(np.where(q > 0, qvar / q ** 2, 0)
+                                 + np.where(r_ > 0, rvar / r_ ** 2, 0))
+    axr.axhline(1.0, color=REF_COLOUR, linewidth=0.8, linestyle="--")
+    axr.stairs(r, edges, color="black")
+    axr.fill_between(edges, pad(r - er), pad(r + er), step="post",
+                     color="black", alpha=0.15, linewidth=0)
+    finite = r[np.isfinite(r)]
+    if finite.size:
+        lo, hi = np.percentile(finite, [1, 99])
+        padding = 0.1 * max(hi - lo, 0.05)
+        axr.set_ylim(min(lo - padding, 0.95), max(hi + padding, 1.05))
+    axr.set_ylabel("$\\mu$ = 0 /\nnon-injected", fontsize=9)
+    axr.set_xlabel(xlabel(obs))
+    if logy:
+        ax.set_yscale("log")
+    ax.set_ylabel("weighted entries / bin")
+    used = (r_ > 0) & (q > 0)
+    chi2 = float(np.sum((q[used] - r_[used]) ** 2
+                        / (qvar[used] + rvar[used])))
+    ndf = int(used.sum())
+    ax.set_title(f"{label} $\\mu$ = 0 vs non-injected mixed: {obs}\n"
+                 f"yield ratio {q.sum() / r_.sum():.4f}, "
+                 f"$\\chi^2$/ndf = {chi2:.1f}/{ndf}", fontsize=10)
+    ax.legend(fontsize=8)
+    fig.savefig(outpath, bbox_inches="tight")
+    plt.close(fig)
+    return q.sum() / r_.sum(), chi2, ndf
+
+
 def summary_plots(table, label, outdir, fmt):
     obs_list = sorted(table)
     cmap = plt.get_cmap("tab10")
@@ -363,6 +446,10 @@ def main(argv=None):
                    help="another study's split file: also draw this file's SQ "
                         "shape against that one's")
     p.add_argument("--compare-label", default=None)
+    p.add_argument("--reference", default=None, metavar="FILE",
+                   help="non-injected mixed sample (plain make_histograms.py "
+                        "output, same cuts): also draw it against mu = 0")
+    p.add_argument("--reference-label", default="non-injected mixed")
     p.add_argument("-o", "--outdir", default=".")
     p.add_argument("--format", default="pdf", choices=("pdf", "png", "svg"))
     args = p.parse_args(argv)
@@ -418,6 +505,21 @@ def main(argv=None):
             if obs in other:
                 sqcompare_plot(obs, data[obs], other[obs], label, olabel,
                                outdir / f"sqcompare_{obs}.{args.format}")
+    if args.reference:
+        ref = load_reference(args.reference)
+        if args.rebin > 1:
+            ref = {o: h[::hist.rebin(args.rebin)] for o, h in ref.items()}
+        print(f"\n{'observable':<26} {'mu=0 / non-inj yield':>21} "
+              f"{'chi2/ndf':>14}")
+        for obs in obs_list:
+            if obs not in ref:
+                print(f"{obs:<26} (not in {args.reference})")
+                continue
+            yr, c, n = noninj_plot(obs, data[obs], ref[obs], label,
+                                   args.reference_label,
+                                   outdir / f"noninj_{obs}.{args.format}",
+                                   args.log)
+            print(f"{obs:<26} {yr:>21.4f} {f'{c:.1f}/{n}':>14}")
     print(f"\nfigures in {outdir}/")
     return 0
 
