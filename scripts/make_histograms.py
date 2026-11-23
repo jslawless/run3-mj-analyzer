@@ -163,6 +163,14 @@ PSIGNAL_EDGES = np.unique(np.round(np.concatenate([
 # both must stay in this list.
 EXTRA_BRANCHES = ["HT", "ScoutingPFJet_pt"]
 
+#: Pseudo-event branches naming the two parent files, read only with
+#: --signal-file-id-min to split the histograms by pair type.
+PARENT_FILE_BRANCHES = ["seed_file_id", "match_file_id"]
+
+#: Pair types under --signal-file-id-min, by how many of the two halves come
+#: from a signal file: QCD+QCD, signal+QCD (either order), signal+signal.
+PAIR_TYPES = ("QQ", "SQ", "SS")
+
 #: Per-event weight branch, when the input carries one of its own. Mixed
 #: pseudo-events do: the mixer resolves ``w_rel[seed] * w_rel[match]`` per event
 #: at assembly and writes it as ``xs_weight``, and the evaluator passes every
@@ -552,6 +560,15 @@ def main():
                         help="keep events whose two candidates have "
                         "|m1-m2|/|m1+m2| < A (default: MASS_ASYM_CUT = "
                         "%(default)s)")
+    parser.add_argument("--signal-file-id-min", type=int, default=None,
+                        metavar="ID",
+                        help="signal-injection pseudo-events: a half whose "
+                        "parent file_id is >= ID came from signal. Every "
+                        "histogram is then written once per pair type, "
+                        "h_<name>_QQ / _SQ / _SS, unscaled, so a signal "
+                        "strength mu can be applied afterwards as QQ + "
+                        "mu^p SQ + mu^(2p) SS, p = --weight-power. Needs the "
+                        "seed_file_id / match_file_id branches.")
     args = parser.parse_args()
     use_bars = tqdm is not None and not args.no_progress
     N_JETS_CUT = args.njets
@@ -565,6 +582,10 @@ def main():
         n_original[name] = 0.0
     defs = histogram_defs(args)
     book = HistogramBook(defs)
+    # --signal-file-id-min: one book per pair type, merged under suffixed names
+    # at write time. The cutflow below still counts every event.
+    split = args.signal_file_id_min is not None
+    type_books = {t: HistogramBook(defs) for t in PAIR_TYPES} if split else {}
     print(
         f"\n{len(jobs)} file(s) to process | histograms: {sorted(defs)} "
         f"(bins={args.bins}, range={args.range[0]:g}-{args.range[1]:g}) | "
@@ -679,6 +700,13 @@ def main():
             branches = [f"{m}Candidate_*" for m in models] + EXTRA_BRANCHES
             if wbranch:
                 branches = branches + [wbranch]
+            if split:
+                missing = [b for b in PARENT_FILE_BRANCHES if b not in tree]
+                if missing:
+                    raise SystemExit(
+                        f"{path} has no {missing} - --signal-file-id-min needs "
+                        "mixed pseudo-events")
+                branches = branches + PARENT_FILE_BRANCHES
             event_bar = (
                 tqdm(total=tree.num_entries, unit="evt", leave=False,
                      desc=Path(path).name[:48])
@@ -699,7 +727,17 @@ def main():
                         np.float64) ** args.weight_power
                     sum_event_weight[dataset] = (
                         sum_event_weight.get(dataset, 0.0) + float(w.sum()))
-                book.fill(events, models, w)
+                if split:
+                    n_sig = sum(
+                        (ak.to_numpy(events[b]) >= args.signal_file_id_min)
+                        .astype(int) for b in PARENT_FILE_BRANCHES)
+                    for n, t in enumerate(PAIR_TYPES):
+                        sel = n_sig == n
+                        type_books[t].fill(
+                            events[sel], models,
+                            w if np.isscalar(w) else w[sel])
+                else:
+                    book.fill(events, models, w)
                 njet_pass = _njet_pass(events)
                 event_pass = njet_pass & _ht_pass(events)
                 n_pass_njet += float(ak.sum(njet_pass))
@@ -733,6 +771,9 @@ def main():
     if use_bars:
         file_bar.close()
 
+    for t, tb in type_books.items():
+        for key, h in tb.hists.items():
+            book.hists[f"{key}_{t}"] = h
     if not book.hists:
         raise SystemExit("No histograms filled - no usable input files?")
 
@@ -771,6 +812,13 @@ def main():
         print(f"  h_{key}: {h.sum().value:.6g}")
 
     extra = {"n_original": json.dumps(n_original)}
+    if split:
+        # What a reader needs to scale the pair types by mu: SQ goes as
+        # mu^weight_power, SS as mu^(2 weight_power).
+        extra["pair_split"] = json.dumps({
+            "signal_file_id_min": args.signal_file_id_min,
+            "weight_power": args.weight_power,
+            "types": list(PAIR_TYPES)})
     if sum_event_weight:
         extra["sum_event_weight"] = json.dumps(sum_event_weight)
 
