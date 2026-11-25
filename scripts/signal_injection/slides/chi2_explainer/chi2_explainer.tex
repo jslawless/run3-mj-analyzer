@@ -1,0 +1,344 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ---------------------------------------------------------------------------
+%  How the chi^2 part of the signal-injection study works - a from-scratch
+%  explainer. Figures: make_figures.py (real M300 x1 PairNetV0_9 histograms).
+%  Compile:  latexmk -pdf chi2_explainer.tex
+% ---------------------------------------------------------------------------
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\graphicspath{{figs/}{../../plots/}}
+
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\useinnertheme{circles}
+
+\definecolor{cmsBlue}{RGB}{0,71,133}
+\definecolor{accent}{RGB}{214,96,29}
+\definecolor{softgray}{RGB}{120,120,120}
+\definecolor{sigred}{RGB}{214,39,40}
+
+\setbeamercolor{frametitle}{fg=cmsBlue}
+\setbeamercolor{title}{fg=cmsBlue}
+\setbeamercolor{structure}{fg=cmsBlue}
+\setbeamercolor{itemize item}{fg=accent}
+\setbeamercolor{itemize subitem}{fg=accent}
+\setbeamercolor{block title}{fg=white,bg=cmsBlue}
+\setbeamercolor{block body}{bg=cmsBlue!6}
+\setbeamerfont{frametitle}{series=\bfseries}
+\setbeamerfont{itemize/enumerate body}{size=\small}
+\setbeamerfont{itemize/enumerate subbody}{size=\small}
+\setbeamerfont{block body}{size=\small}
+\setbeamertemplate{frametitle}{%
+  \vspace{0.6em}\insertframetitle\par
+  {\color{accent}\rule{\textwidth}{1.2pt}}\par}
+\setbeamertemplate{footline}{%
+  \hfill{\color{softgray}\scriptsize\insertframenumber/\inserttotalframenumber}\hspace{1em}\vspace{0.5em}}
+
+\newcommand{\plotnote}[1]{\vfill{\footnotesize #1}\par\vspace{0.3em}}
+\newcommand{\dchi}{\ensuremath{\Delta\chi^2}}
+
+\title{\textbf{The $\chi^2$ in the Signal-Injection Study}}
+\subtitle{What it measures, how to read it, and what it says}
+\date{23 November 2026}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{The question we want one number for}
+  \begin{itemize}
+    \item We have two versions of the mixed background:
+      \begin{itemize}
+        \item $B_0$: built from QCD hemispheres only ($\mu = 0$);
+        \item $B_\mu$: the same QCD pairs plus the pairs that contain a signal
+              hemisphere, at signal strength $\mu$.
+      \end{itemize}
+    \item \textbf{Question:} is the difference between their \emph{shapes} big
+          enough to matter?
+    \item ``Big'' needs a yardstick. Ours: how precisely we know $B_0$ in the
+          first place, i.e.\ its statistical error.
+    \item The $\chi^2$ is a way of combining ``difference divided by error'' over
+          all the bins of a histogram into a single number.
+  \end{itemize}
+  \vfill
+  {\small Every example in this deck uses the real M300 $\times 1$ histograms,
+  PairNetV0\_9 average tri-jet mass, 30 GeV bins, $\mu = 1$ (the nominal cross section).}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Step 1: the two shapes}
+  \centering
+  \includegraphics[width=0.52\textwidth]{f1_shapes.pdf}
+  \plotnote{Both are normalised to unit area, so we compare shapes only. By eye
+    they look almost identical; the ratio panel shows the signal pairs push the
+    300--500 GeV region up by a few percent, and since the area is fixed,
+    everything else comes down slightly.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Step 2: every bin has an uncertainty $\sigma_i$}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+    \includegraphics[width=\textwidth]{f1_shapes.pdf}
+    \column{0.44\textwidth}
+    \begin{itemize}
+      \item The grey band is $\sigma_i$: the statistical error of bin $i$ of $B_0$.
+      \item Meaning: if we rebuilt $B_0$ from a fresh, equally large set of MC
+            events, bin $i$ would typically move by about $\sigma_i$.
+      \item It comes from the fill weights: $\sigma_i = \sqrt{\sum w^2}$ over the
+            events in that bin (with $w = \sqrt{\text{xs\_weight}}$).
+      \item Bins with many events have small relative errors; the sparse tail
+            has large ones.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Step 3: the pull of each bin}
+  \centering
+  \includegraphics[width=0.59\textwidth]{f2_pulls.pdf}
+  \plotnote{The \textbf{pull} is the difference in units of the error:
+    $\text{pull}_i = (B_{1,i} - B_{0,i})/\sigma_i$. A pull of 1 means ``one standard
+    error''. Here almost every bin is within $\pm 1.5$, so no single bin looks
+    alarming on its own.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Step 4: square and add $\Rightarrow$ $\chi^2$}
+  \centering
+  \includegraphics[width=0.56\textwidth]{f3_cumulative.pdf}
+  \plotnote{$\chi^2 = \sum_i \text{pull}_i^2$. Squaring stops positive and
+    negative pulls from cancelling, and adding lets 47 small, individually
+    harmless pulls build up evidence. This is the running total, bin by bin: it
+    ends at 23.4.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{What would pure noise give? The usual rule $\chi^2 \approx \text{ndf}$}
+  \centering
+  \includegraphics[width=0.74\textwidth]{f4_noise_vs_shift.pdf}
+  \plotnote{Left: a toy where every bin just fluctuates randomly by its $\sigma_i$.
+    Pulls are scattered, with random signs, and each squared pull is 1 on average,
+    so $\chi^2 \approx$ number of bins (``ndf'' = 47, give or take $\sqrt{2\cdot 47}
+    \approx 10$). That is where the familiar ``$\chi^2/\text{ndf} \approx 1$ means
+    a good fit'' comes from. Right: our shift is \emph{coherent}: a block of
+    positive pulls, with the rest slightly negative.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Our $\chi^2$ is not the usual kind}
+  \begin{itemize}
+    \item $B_1$ and $B_0$ are built from the \emph{same} QCD pairs; $B_1$ just
+          adds the signal pairs on top.
+    \item So $B_1 - B_0$ contains \textbf{no random noise from QCD}: it is purely
+          the shift the signal causes. (Almost: see the catch in two slides.)
+    \item That means our sum is not ``noise $\approx$ ndf'' at all. It measures
+          how far apart the two \emph{true} shapes are. Call it \dchi.
+    \item If you compared a real, noisy measurement of $B_1$ against $B_0$, you
+          would get on average
+          \[ \chi^2 \approx \text{ndf} + \dchi . \]
+          The noise supplies the ndf; the signal supplies \dchi\ on top.
+  \end{itemize}
+  \begin{block}{Consequence}
+    ``$\chi^2/\text{ndf} \approx 1$'' does \textbf{not} mean ``consistent with noise''
+    here. \dchi\ = ndf means the signal adds as much as all the noise combined.
+    I read the earlier summary plots wrongly because of this.
+  \end{block}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{The catch: the signal sample is noisy too}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+    \includegraphics[width=\textwidth]{f7_binning.pdf}
+    \column{0.44\textwidth}
+    \begin{itemize}
+      \item Only $\sim$300 SQ events go into the M300 $\times 1$ mass shift, so
+            the shift itself fluctuates from bin to bin.
+      \item Those fluctuations get squared and added too. On average they add
+            $\sum_i \sigma^2_{\text{sig},i}/\sigma_i^2$, which is \emph{not}
+            a real shift.
+      \item That bias grows with finer bins (grey vs blue). Subtracting it
+            leaves \dchi\ $\approx 12$, stable with binning (red).
+      \item Raw 23.4 $\rightarrow$ corrected 12.0 for this histogram.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Check of the correction: $\times 1$ vs $\times 4$}
+  \centering
+  \includegraphics[width=0.76\textwidth]{f8_x1_vs_x4.pdf}
+  \plotnote{The $\times 4$ study describes the same physics with 4$\times$ more SQ
+    events, so its shift is much less noisy. Before the correction (left) $\times 1$
+    reads higher than $\times 4$; after it (right) they agree. All numbers from here
+    on are corrected.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{From \dchi\ to a significance: two ways}
+  \begin{itemize}
+    \item \dchi\ by itself is not a significance; you have to say what test you
+          would actually run. Two limits bracket the answer:
+  \end{itemize}
+  \vspace{0.5em}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+    \begin{block}{Generic test (``does anything look off?'')}
+      Compare the two histograms with a plain $\chi^2$, without saying in advance
+      what the difference should look like. Every bin's noise counts against you.
+    \end{block}
+    \column{0.48\textwidth}
+    \begin{block}{Known-shape test (``is \emph{this} shift there?'')}
+      You know what the signal does to the shape (we do: it is the SQ pairs) and
+      fit only for \emph{how much} of it is present. Noise in other directions
+      does not count.
+    \end{block}
+  \end{columns}
+  \vspace{0.5em}
+  \begin{itemize}
+    \item The generic test is what a closure check does; the known-shape test is
+          the most sensitive anything could be. Reality is in between.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Generic test: $Z \approx 1.1\sigma$}
+  \centering
+  \includegraphics[width=0.56\textwidth]{f5_generic_test.pdf}
+  \plotnote{Grey: what $\chi^2$ comparisons give with no signal (mean 47). Red: what
+    they give with the $\mu = 1$ shift (mean 47 + 12 = 59). A typical signal
+    outcome (dotted line) is exceeded by 13\% of no-signal outcomes, i.e.\ about
+    $1.1\sigma$. The 47 noisy bins drown out a shift that lives in a few of them.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Known-shape test: $Z = \sqrt{\dchi} \approx 3.5\sigma$}
+  \centering
+  \includegraphics[width=0.54\textwidth]{f6_template_test.pdf}
+  \plotnote{Fit the data as $B_0 + a\,(B_1 - B_0)$ and measure $a$. All 47 bins
+    vote on the one number $a$, so their information adds up: the error on $a$
+    shrinks until $a = 1$ sits $\sqrt{\dchi} = \sqrt{12} \approx 3.5$ standard errors
+    from 0. That is the whole reason for the square root: $\sqrt{\dchi} = 2$ is
+    $2\sigma$, $\sqrt{\dchi} = 5$ (\dchi\ = 25) is $5\sigma$.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Why the curves are straight lines in $\mu$}
+  \begin{itemize}
+    \item With $\sqrt{w}$ filling, the signal pairs enter as $\sqrt{\mu}\,\text{SQ}$.
+    \item The shift in every bin therefore grows like $\sqrt{\mu}$, its square
+          like $\mu$, so
+          \[ \dchi(\mu) \approx \mu \times \dchi(1). \]
+    \item On a log--log plot that is a straight line of slope 1, and it makes
+          reading off thresholds easy:
+          \[ \mu_{2\sigma} \approx \frac{4}{\dchi(1)}, \qquad
+             \mu_{5\sigma} \approx \frac{25}{\dchi(1)} \quad
+             \text{(known-shape test)}. \]
+    \item At very large $\mu$ the SS pairs (which grow like $\mu$, not
+          $\sqrt{\mu}$) bend the $\times 4$ curves upward. Ignore that region.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Result: M300 $\times 1$}
+  \vspace{-0.5em}
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \includegraphics[width=\textwidth]{M300_x1/summary_chi2.pdf}
+    \column{0.47\textwidth}
+    \small
+    \begin{tabular}{@{}lccc@{}}
+      \toprule
+      & \dchi & $\mu$ for & $\mu$ for \\
+      & at $\mu{=}1$ & $2\sigma$ & $5\sigma$ \\
+      \midrule
+      HT & 60 & 0.07 & 0.41 \\
+      lead jet $p_T$ & 78 & 0.05 & 0.32 \\
+      mass, V0\_9 & 12 & 0.33 & 2.1 \\
+      mass, V1 & 14 & 0.30 & 1.9 \\
+      mass, InRepo & 21 & 0.19 & 1.2 \\
+      mass, Larry & 17 & 0.24 & 1.5 \\
+      \bottomrule
+    \end{tabular}
+    \vspace{0.3em}
+    \begin{itemize}
+      \item Known-shape test. At $\mu = 1$ the masses are 3.5--4.5$\sigma$, HT and
+            $p_T$ about 8--9$\sigma$.
+      \item The generic test gives 1.1--1.9$\sigma$ (mass) and 4--6$\sigma$ (HT, $p_T$).
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Result: M1000 $\times 1$}
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \includegraphics[width=\textwidth]{M1000_x1/summary_chi2.pdf}
+    \column{0.47\textwidth}
+    \small
+    \begin{tabular}{@{}lccc@{}}
+      \toprule
+      & \dchi & $\mu$ for & $\mu$ for \\
+      & at $\mu{=}1$ & $2\sigma$ & $5\sigma$ \\
+      \midrule
+      HT & 0.8 & 5 & 31 \\
+      lead jet $p_T$ & 0.2 & 20 & 124 \\
+      mass, V0\_9 & 0.4 & 10 & 60 \\
+      mass, V1 & 0.5 & 8 & 52 \\
+      mass, InRepo & 0.2 & 17 & 105 \\
+      mass, Larry & 0.3 & 12 & 72 \\
+      \bottomrule
+    \end{tabular}
+    \vspace{0.6em}
+    \begin{itemize}
+      \item Invisible at $\mu = 1$; it takes $\mu \sim 30$--100 for $5\sigma$ even in
+            the most sensitive (known-shape) test.
+      \item $\times 4$ gives the same picture.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{What these numbers do \emph{not} include}
+  \begin{itemize}
+    \item \textbf{Correlated bins.} Each parent 5-jet event gives its two
+          hemispheres to two different pseudo-events, so bins are not independent.
+          The $\sigma_i$ are then too small and every \dchi\ is too large. A bootstrap
+          over parent events would measure by how much.
+    \item \textbf{MC statistics, not data.} $\sigma_i$ is the precision of 8M
+          weighted MC pseudo-events. \dchi\ scales with sample size: with a mixed
+          \emph{data} sample $k$ times larger (in effective events), multiply \dchi\ by $k$.
+    \item \textbf{Statistics only.} The background estimate also has systematic
+          uncertainties; the closure test currently disagrees at a far larger level
+          than this shift. The fair yardstick is the total uncertainty.
+    \item \textbf{Shape only.} Unit-area comparison: any change in the overall yield
+          is ignored.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Take-aways}
+  \begin{itemize}
+    \item The $\chi^2$ here is \dchi: the size of a noise-free shift, in units of the
+          background's statistical error. Compare it with 4 and 25, not with ndf.
+    \item The signal sample's own noise inflated the raw numbers by up to 2$\times$;
+          the corrected \dchi\ is stable with binning and agrees between $\times 1$
+          and $\times 4$.
+    \item M300 at its nominal cross section shifts the mixed background by
+          $\sim$3.5--4.5$\sigma$ in mass and $\sim$8$\sigma$ in HT/$p_T$, relative to
+          the mixed-MC statistics, if you know what to look for. A generic test sees
+          only 1--2$\sigma$ in mass.
+    \item M1000 is negligible.
+    \item Before quoting any of this: bootstrap for the correlations, then rescale to
+          the statistics and total uncertainty of the data-driven background.
+  \end{itemize}
+\end{frame}
+
+\end{document}

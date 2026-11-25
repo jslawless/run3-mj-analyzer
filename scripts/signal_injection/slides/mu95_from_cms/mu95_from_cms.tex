@@ -1,0 +1,140 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ---------------------------------------------------------------------------
+%  From the CMS-EXO-21-004 limits to the mu95 used in the injection scan
+%  Figure: make_figures.py (reads ../../excluded_xs/*Figure4c.csv)
+%  Build: ../../build_slides.sh
+% ---------------------------------------------------------------------------
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\graphicspath{{figs/}}
+
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\useinnertheme{circles}
+
+\definecolor{cmsBlue}{RGB}{0,71,133}
+\definecolor{accent}{RGB}{214,96,29}
+\definecolor{softgray}{RGB}{120,120,120}
+
+\setbeamercolor{frametitle}{fg=cmsBlue}
+\setbeamercolor{title}{fg=cmsBlue}
+\setbeamercolor{structure}{fg=cmsBlue}
+\setbeamercolor{itemize item}{fg=accent}
+\setbeamerfont{frametitle}{series=\bfseries}
+\setbeamertemplate{frametitle}{%
+  \vspace{0.6em}\insertframetitle\par
+  {\color{accent}\rule{\textwidth}{1.2pt}}\par}
+\setbeamertemplate{footline}{%
+  \hfill{\color{softgray}\scriptsize\insertframenumber/\inserttotalframenumber}\hspace{1em}\vspace{0.5em}}
+
+\newcommand{\muobs}{\mu_{95}^{\text{obs}}}
+
+\title{\textbf{Excluded Signal Strength for the Injection Study}}
+\subtitle{From the CMS-EXO-21-004 limits to $\muobs$}
+\date{24 November 2026}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Why the excluded cross section, and where it comes from}
+  \begin{itemize}
+    \item The nominal-strength scan injects gluinos at the theory cross section
+          ($\mu = 1$). Those are already excluded: the largest signal that can
+          still be in data is the 95\% CL limit.
+    \item Latest CMS limit: \textbf{CMS-EXO-21-004}, ``Searches for pair-produced
+          multijet resonances using data scouting'', PRL 133 (2024) 201803,
+          arXiv:2404.02992. 128\,fb$^{-1}$ at 13\,TeV; RPV $\tilde g \to qqq$
+          excluded up to 1.7\,TeV. It is the Run 2 predecessor of this analysis.
+    \item The numbers come from its HEPData record (\texttt{ins2774247}), table
+          ``Figure 4c'' (resolved trijets). The CSV links on the CMS public page
+          are dead; HEPData's download works.
+    \item ATLAS (arXiv:2401.16333, 140\,fb$^{-1}$) is weaker at both of our mass
+          points.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{What the HEPData table contains}
+  \begin{itemize}
+    \item For each gluino mass, 200--2000\,GeV:
+      \begin{itemize}
+        \item observed and expected ($\pm1\sigma$, $\pm2\sigma$) 95\% CL upper
+              limits on $\sigma \cdot B \cdot A$, in pb;
+        \item the acceptance $A$ of that mass's search region;
+        \item the theory $\sigma \cdot A$ (with $B = 1$), in pb.
+      \end{itemize}
+    \item The limit is on the \emph{visible} cross section, after the paper's
+          selection. Dividing by the theory visible cross section removes the
+          acceptance:
+          \[ \mu_{95} = \frac{(\sigma B A)_{95}}{\sigma_{\text{th}} A}
+             \qquad\text{and}\qquad \sigma_{\text{th}} = \frac{\sigma_{\text{th}} A}{A}. \]
+    \item Two search regions: low mass ($A \sim 10^{-3}$) and high mass
+          ($A \sim$ 2--6\%). 500 and 900\,GeV appear twice, once per region.
+          Neither affects 300 or 1000\,GeV.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{The numbers at our two mass points}
+  \centering\small
+  \begin{tabular}{lcc}
+    \toprule
+     & M300 & M1000 \\
+    \midrule
+    search region, acceptance $A$ & low, $9.5\times10^{-4}$ & high, 0.0383 \\
+    theory $\sigma A$ (13\,TeV) & 0.441\,pb & 0.0125\,pb \\
+    $\Rightarrow$ theory $\sigma$ (13\,TeV) & 462.6\,pb & 0.325\,pb \\
+    observed limit on $\sigma B A$ & $1.49\times10^{-3}$\,pb & $3.74\times10^{-4}$\,pb \\
+    expected limit on $\sigma B A$ & $8.75\times10^{-4}$\,pb & $4.79\times10^{-4}$\,pb \\
+    \midrule
+    $\boldsymbol{\muobs}$ = observed / theory & $\mathbf{3.39\times10^{-3}}$ & \textbf{0.0300} \\
+    $\mu_{95}^{\text{exp}}$ ($\pm1\sigma$) & $1.99\,[1.06, 3.61]\times10^{-3}$ & $0.038\,[0.024, 0.064]$ \\
+    \bottomrule
+  \end{tabular}
+  \vfill
+  \raggedright
+  At 300\,GeV only 0.3\% of the theory cross section is allowed; at 1\,TeV, 3\%.
+  The observed limit is used throughout (it is what data allows); at M300 it is
+  weaker than expected (just inside $+1\sigma$), at M1000 slightly stronger.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\mu_{95}$ at every mass}
+  \centering
+  \includegraphics[height=0.64\textheight]{mu95_vs_mass.pdf}
+  \vfill\raggedright{\small
+  The same ratio at every mass in the table. It crosses $\mu = 1$ between 1.6 and
+  1.8\,TeV, which reproduces the paper's 1.7\,TeV exclusion and checks the
+  translation. Stars: our two points.}\par\vspace{0.4em}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Carrying $\mu_{95}$ over to our samples}
+  \begin{itemize}
+    \item The limit is at 13\,TeV, our MC at 13.6\,TeV. We keep the excluded
+          \emph{fraction} of the theory cross section fixed and apply it to our
+          own theory cross section:
+          \[ \sigma_{95}(13.6) = \muobs \times \sigma_{\text{th}}(13.6) \]
+          M300: $3.39\times10^{-3} \times 637.6\,\text{pb} = 2.16$\,pb;
+          M1000: $0.030 \times 0.484\,\text{pb} = 0.0145$\,pb.
+          This assumes the signal scales with $\sqrt{s}$ like the theory cross
+          section (ratios 1.38 and 1.49); our samples already carry
+          $\sigma_{\text{th}}(13.6)$, so $\mu$ is simply a multiplier on their weights.
+    \item Our acceptance does not enter: $\mu$ scales the whole signal, whatever
+          selection we apply afterwards.
+    \item In the scan, $\mu$ is the x1-equivalent strength (x4 studies apply
+          $\mu/4$). Scanned: $\muobs$, $10\,\muobs$, $100\,\muobs$ and $\mu = 1$.
+    \item Result at $\muobs$: $\Delta\chi^2 \le 0.3$ for every observable
+          (2$\sigma$ needs 4), so the injection is invisible. M300 needs
+          60--100$\times$ its limit to reach 2$\sigma$ in mass.
+  \end{itemize}
+\end{frame}
+
+\end{document}

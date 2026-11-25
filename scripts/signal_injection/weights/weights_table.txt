@@ -1,0 +1,23 @@
+Per-dataset weight w_rel = xs_pb / N  (N = summed cutflow[0])
+
+dataset                files       xs_pb            N       w_rel
+QCD HT-1000to1200        704       883.7   20,648,422    4.28e-05
+QCD HT-1200to1500        742       383.5   19,537,640   1.963e-05
+QCD HT-1500to2000        738       125.2   17,527,147   7.143e-06
+QCD HT-2000              805       26.49   19,336,092    1.37e-06
+QCD HT-200to400          553   1.961e+06   18,647,227      0.1052
+QCD HT-400to600          559       95620   19,101,232    0.005006
+QCD HT-600to800          694       13540   19,122,441   0.0007081
+QCD HT-800to1000         687        3033   18,625,645   0.0001628
+RPV_M300 (x1)              1       637.6       15,254      0.0418
+RPV_M300 (x4)              4       637.6       61,016     0.01045
+RPV_M1000 (x1)             1      0.4842       11,365    4.26e-05
+RPV_M1000 (x4)             4      0.4842       45,460   1.065e-05
+
+Example mixed events, M300 x1 (fill weight = sqrt(xs_weight))
+
+pair                                 xs_weight  fill weight
+QQ: HT-400to600 x HT-600to800        3.545e-06     0.001883
+SQ: RPV_M300 x HT-400to600           0.0002092      0.01447
+SQ at mu = 0.00339                   7.093e-07    0.0008422
+SQ at mu = 1                         0.0002092      0.01447

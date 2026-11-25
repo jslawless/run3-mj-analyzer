@@ -35,8 +35,9 @@ Observables: ``mass_<Model>`` (average tri-jet candidate mass, one per model),
                        y), raw entry counts in the legend, and the per-bin
                        signal-containing fraction below. SS is quoted in the
                        legend and only drawn if it has --ss-min-entries or more.
-  summary_chi2.pdf     chi2/ndf of each mu shape against mu = 0, vs mu, one
-                       curve per observable.
+  summary_chi2.pdf     Delta chi2 of each mu shape against mu = 0, vs mu, one
+                       curve per observable, with lines at 4 and 25 (2 and 5
+                       sigma for a shift of known shape).
   summary_sigfrac.pdf  signal-containing fraction of the weighted sample vs mu.
   scan_table.json      the numbers behind both summaries.
   sqcompare_<obs>.pdf  only with --compare-sq OTHER: this file's SQ shape vs
@@ -50,12 +51,28 @@ Observables: ``mass_<Model>`` (average tri-jet candidate mass, one per model),
                        differ. Absolute weighted entries (not unit area),
                        ratio below.
 
-chi2/ndf uses the mu = 0 statistical errors only. The mu shapes share all of
-their QQ events with mu = 0, so the difference is purely the signal-containing
-pairs, and the mu = 0 error is the precision the background estimate itself
-has. Read it as "would this shift be visible over the background's own stat
-noise", not as a p-value (bins are also correlated, since each parent event
-supplies both of its hemispheres).
+**Reading the chi2.** It uses the mu = 0 statistical errors only. The mu
+shapes share all of their QQ events with mu = 0, so the difference contains no
+noise: it is purely the shift the signal-containing pairs cause. The sum is
+therefore not an ordinary goodness-of-fit chi2 (which would be ~ndf from noise
+alone) but Delta chi2, the noncentrality a real comparison would gain on top
+of ~ndf. Two conversions are printed:
+
+  Z_tmpl  = sqrt(Delta chi2): the significance of a fit for this particular
+            shift shape (a one-parameter template fit).
+  Z_gen   = the median significance of a generic chi2 test that assumes no
+            shape: median of noncentral chi2(ndf, Delta chi2), as a p-value
+            under chi2(ndf). Always below Z_tmpl, and binning dependent.
+
+Delta chi2 is noise-corrected: the signal pairs are a small MC sample (a few
+hundred SQ events per PairNet), and their own fluctuations add, on average,
+sum(var_signal / sigma0^2) to the raw sum of pull^2 - for the masses at 30 GeV
+bins about half of it. That expectation is subtracted; scan_table.json keeps
+the raw sum and the subtracted part.
+
+Both are against the mixed-MC statistics, not data, and both are optimistic:
+bins are correlated (each parent event supplies both of its hemispheres), so
+the mu = 0 errors are underestimated.
 
     python scripts/plot_injection_scan.py hists_inject_M300_x1.root \\
         --label "M300 x1" --rebin 2 -o plots/M300_x1/
@@ -88,6 +105,9 @@ DEFAULT_MU = [0, 1, 3, 10, 100, 1000, 10000]
 CMAP = plt.get_cmap("viridis")
 REF_COLOUR = "0.45"
 NOMINAL_COLOUR = "black"
+#: set by --mu95: {mu: (legend label, colour)} for the excluded-limit multiples
+MU95_NAMES = {}
+MU95_COLOURS = ("tab:blue", "tab:red", "tab:green")
 
 
 def xlabel(obs):
@@ -155,8 +175,21 @@ def pad(a):
     return np.append(a, a[-1])
 
 
-def style(mu, i, n):
-    """(colour, linewidth, zorder) for the i-th of n nonzero mu values."""
+def style(mu, i, n, highlight=True):
+    """(colour, linewidth, zorder) for the i-th of n nonzero mu values.
+
+    With ``highlight`` off every curve gets the same width; a short list of mu
+    values then uses distinct tab10 colours rather than a viridis ramp. With
+    --mu95, the limit multiples get fixed colours and mu = 1 a thin black line."""
+    if MU95_NAMES:
+        if mu in MU95_NAMES:
+            return MU95_NAMES[mu][1], 1.4, 4
+        if mu == 1:
+            return NOMINAL_COLOUR, 1.4, 5
+    if not highlight:
+        if n <= 4:
+            return ("tab:blue", "tab:red", "tab:green", "tab:purple")[i], 1.4, 3
+        return CMAP(0.85 * i / max(n - 1, 1)), 1.4, 3
     if mu == 1:
         return NOMINAL_COLOUR, 2.4, 5
     # stop short of viridis' pale yellow end, which vanishes on white
@@ -164,6 +197,8 @@ def style(mu, i, n):
 
 
 def mu_label(mu):
+    if mu in MU95_NAMES:
+        return MU95_NAMES[mu][0]
     if mu == 1:
         return "$\\mu$ = 1 ($\\sigma_{nominal}$)"
     if mu >= 1000:
@@ -172,8 +207,10 @@ def mu_label(mu):
     return f"$\\mu$ = {mu:g}"
 
 
-def scan_plot(obs, parts, mus, power, mu_scale, label, outpath, logy):
-    """One scan_<obs> figure; returns {mu: (signal fraction, chi2, ndf)}."""
+def scan_plot(obs, parts, mus, power, mu_scale, label, outpath, logy,
+              highlight=True, xlim=None):
+    """One scan_<obs> figure; returns {mu: (signal fraction, Delta chi2
+    (noise-corrected), ndf, raw sum of pull^2, its signal-MC noise part)}."""
     edges = parts["QQ"].axes[0].edges
     fig, (ax, axr) = plt.subplots(
         2, 1, figsize=(8, 6), sharex=True,
@@ -194,13 +231,13 @@ def scan_plot(obs, parts, mus, power, mu_scale, label, outpath, logy):
     axr.axhline(1.0, color=REF_COLOUR, linewidth=0.8, linestyle="--")
 
     used = (d0 > 0) & (e0 > 0)
-    results = {0.0: (0.0, 0.0, int(used.sum()) - 1)}
+    results = {0.0: (0.0, 0.0, int(used.sum()) - 1, 0.0, 0.0)}
     nonzero = [m for m in mus if m > 0]
     ratios = []
     for i, mu in enumerate(nonzero):
         v, var = combine(parts, mu * mu_scale, power)
         d, _ = unit_area(edges, v, var)
-        colour, lw, z = style(mu, i, len(nonzero))
+        colour, lw, z = style(mu, i, len(nonzero), highlight)
         ax.stairs(d, edges, color=colour, linewidth=lw, zorder=z,
                   label=mu_label(mu))
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -208,19 +245,39 @@ def scan_plot(obs, parts, mus, power, mu_scale, label, outpath, logy):
         axr.stairs(r, edges, color=colour, linewidth=lw, zorder=z)
         ratios.append(r)
         frac = (v.sum() - v0.sum()) / v.sum() if v.sum() > 0 else 0.0
-        chi2 = float(np.sum((d[used] - d0[used]) ** 2 / e0[used] ** 2))
-        results[mu] = (frac, chi2, int(used.sum()) - 1)
+        raw = float(np.sum((d[used] - d0[used]) ** 2 / e0[used] ** 2))
+        # The signal pairs are a finite MC sample too: their own fluctuations
+        # add sum(var_signal / sigma0^2) to the raw sum on average, which is
+        # not a shift. Subtract that expectation (density units, like d).
+        app = mu * mu_scale
+        var_sig = (app ** (2 * power) * parts["SQ"].variances()
+                   + app ** (4 * power) * parts["SS"].variances())
+        var_sig = var_sig / (v.sum() * np.diff(edges)) ** 2
+        noise = float(np.sum(var_sig[used] / e0[used] ** 2))
+        results[mu] = (frac, max(raw - noise, 0.0), int(used.sum()) - 1,
+                       raw, noise)
 
     # Ratio limits from the bulk, so one wild tail bin doesn't squash the rest.
-    finite = np.concatenate([r[np.isfinite(r)] for r in ratios]
-                            + [(1 + rel0)[np.isfinite(rel0)],
-                               (1 - rel0)[np.isfinite(rel0)]])
+    # With xlim, only the bins inside the window count (for the y range too).
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    inwin = np.ones_like(centres, dtype=bool) if xlim is None else \
+        (centres >= xlim[0]) & (centres <= xlim[1])
+    finite = np.concatenate([r[inwin & np.isfinite(r)] for r in ratios]
+                            + [(1 + rel0)[inwin & np.isfinite(rel0)],
+                               (1 - rel0)[inwin & np.isfinite(rel0)]])
     if finite.size:
         lo, hi = np.percentile(finite, [1, 99])
         padding = 0.1 * max(hi - lo, 0.05)
-        axr.set_ylim(min(lo - padding, 0.95), max(hi + padding, 1.05))
+        floor = 0.005 if xlim is not None else 0.05
+        axr.set_ylim(min(lo - padding, 1 - floor), max(hi + padding, 1 + floor))
     if logy:
         ax.set_yscale("log")
+    if xlim is not None:
+        axr.set_xlim(*xlim)
+        vis = d0[inwin & (d0 > 0)]
+        if vis.size:
+            ax.set_ylim(*((vis.min() / 2, vis.max() * 2) if logy
+                          else (0, vis.max() * 1.15)))
     ax.set_ylabel("density")
     axr.set_ylabel("ratio to\n$\\mu$ = 0", fontsize=9)
     axr.set_xlabel(xlabel(obs))
@@ -274,7 +331,8 @@ def decomp_plot(obs, parts, split, power, mu_scale, label, outpath,
     plt.close(fig)
 
 
-def sqcompare_plot(obs, mine, other, label, other_label, outpath):
+def sqcompare_plot(obs, mine, other, label, other_label, outpath,
+                   logy=False):
     """sqcompare_<obs>: unit-area SQ of this file vs another study's."""
     edges = mine["SQ"].axes[0].edges
     fig, (ax, axr) = plt.subplots(
@@ -302,6 +360,8 @@ def sqcompare_plot(obs, mine, other, label, other_label, outpath):
     axr.set_ylim(0, 2)
     axr.set_ylabel(f"{label} /\n{other_label}", fontsize=9)
     axr.set_xlabel(xlabel(obs))
+    if logy:
+        ax.set_yscale("log")
     ax.set_ylabel("density")
     ax.set_title(f"SQ shape: {label} vs {other_label} - {obs}", fontsize=11)
     ax.legend(fontsize=8)
@@ -383,29 +443,73 @@ def noninj_plot(obs, parts, ref, label, ref_label, outpath, logy):
     return q.sum() / r_.sum(), chi2, ndf
 
 
+def z_generic(dchi2, ndf):
+    """Median significance of a generic shape test (no assumed shift shape).
+
+    A real comparison against an independent sample would give a chi2 drawn
+    from a noncentral chi2(ndf, lambda = dchi2); its median, read as a p-value
+    under the no-signal chi2(ndf), converted to Gaussian sigma. None without
+    scipy.
+    """
+    try:
+        from scipy import stats
+    except ImportError:
+        return None
+    if dchi2 <= 0 or ndf <= 0:
+        return 0.0
+    median = stats.ncx2.median(ndf, dchi2)
+    return float(stats.norm.isf(stats.chi2.sf(median, ndf)))
+
+
+def mu_crossing(mus, dchi2, level):
+    """Smallest mu where dchi2 reaches ``level`` (log-log interpolation;
+    below the smallest scanned mu, extrapolated as Delta chi2 ~ mu)."""
+    pts = [(m, c) for m, c in zip(mus, dchi2) if m > 0 and c > 0]
+    for (m0, c0), (m1, c1) in zip(pts, pts[1:]):
+        if c0 < level <= c1:
+            t = (np.log(level) - np.log(c0)) / (np.log(c1) - np.log(c0))
+            return float(np.exp(np.log(m0) + t * (np.log(m1) - np.log(m0))))
+    if pts and pts[0][1] >= level:
+        # Already above at the smallest mu: extrapolate down along
+        # Delta chi2 ~ mu (the shift grows as sqrt(mu) when SQ dominates).
+        return float(pts[0][0] * level / pts[0][1])
+    return None
+
+
+#: Delta chi2 reference lines: sqrt(Delta chi2) = Z for a known-shape shift
+DCHI2_LINES = ((4.0, "2$\\sigma$"), (25.0, "5$\\sigma$"))
+
+
 def summary_plots(table, label, outdir, fmt):
+    """summary_chi2 (Delta chi2 vs mu) and summary_sigfrac."""
     obs_list = sorted(table)
     cmap = plt.get_cmap("tab10")
-    for what, ylab, fname, logy in (
-            ("chi2", "$\\chi^2$/ndf vs $\\mu$ = 0", "summary_chi2", True),
+    mus_all = [mu for t in table.values() for mu in t if mu > 0]
+    for what, ylab, fname in (
+            ("chi2", "$\\Delta\\chi^2$ of the $\\mu$ shape vs $\\mu$ = 0",
+             "summary_chi2"),
             ("frac", "signal-containing fraction (weighted)",
-             "summary_sigfrac", True)):
+             "summary_sigfrac")):
         fig, ax = plt.subplots(figsize=(7, 5))
         for i, obs in enumerate(obs_list):
             rows = [(mu, r) for mu, r in sorted(table[obs].items()) if mu > 0]
             x = [mu for mu, _ in rows]
-            if what == "chi2":
-                y = [r["chi2"] / max(r["ndf"], 1) for _, r in rows]
-            else:
-                y = [r["frac"] for _, r in rows]
+            y = [r["chi2"] if what == "chi2" else r["frac"] for _, r in rows]
             ax.plot(x, y, marker="o", color=cmap(i % 10), label=obs)
         ax.axvline(1.0, color=NOMINAL_COLOUR, linewidth=1.5, linestyle=":",
                    label="$\\sigma_{nominal}$ ($\\mu$ = 1)")
+        for mu, (name, colour) in MU95_NAMES.items():
+            ax.axvline(mu, color=colour, linewidth=1.2, linestyle=":",
+                       label=name)
         if what == "chi2":
-            ax.axhline(1.0, color=REF_COLOUR, linewidth=0.8, linestyle="--")
+            for level, name in DCHI2_LINES:
+                ax.axhline(level, color=REF_COLOUR, linewidth=0.9,
+                           linestyle="--")
+                ax.text(max(mus_all) * 1.05, level * 1.12,
+                        f"{name} (known shape)", fontsize=8, ha="right",
+                        color=REF_COLOUR)
         ax.set_xscale("log")
-        if logy:
-            ax.set_yscale("log")
+        ax.set_yscale("log")
         ax.set_xlabel("$\\mu$ (x1-equivalent signal strength)")
         ax.set_ylabel(ylab)
         ax.set_title(label)
@@ -434,11 +538,26 @@ def main(argv=None):
     p.add_argument("--mu-scale", type=float, default=1.0, metavar="S",
                    help="applied strength = S * mu; 1/K for an xK duplicated-"
                         "signal study, e.g. 0.25 for x4 (default: 1)")
+    p.add_argument("--mu95", type=float, default=None, metavar="MU",
+                   help="x1-equivalent excluded (95%% CL) signal strength: "
+                        "scan mu = MU, 10 MU, 100 MU and 1 (theory) instead "
+                        "of --mu, with those labels and fixed colours, and "
+                        "mark them on summary_chi2")
+    p.add_argument("--mu95-label", default="$\\mu_{95}^{obs}$",
+                   help="legend name for MU (default: %(default)s)")
+    p.add_argument("--xlim", type=float, nargs=2, default=None,
+                   metavar=("LO", "HI"),
+                   help="zoom the scan plots to LO..HI (y ranges follow the "
+                        "visible bins)")
     p.add_argument("--rebin", type=int, default=1, metavar="N")
     p.add_argument("--obs", nargs="+", default=None, metavar="OBS",
                    help="observables to plot, e.g. mass_PairNetV0_9 ht "
                         "(default: all)")
-    p.add_argument("--log", action="store_true", help="log y on the scans")
+    p.add_argument("--log", action="store_true",
+                   help="log y on the scan, noninj and sqcompare plots (the "
+                        "decompositions are always log)")
+    p.add_argument("--no-highlight", action="store_true",
+                   help="draw mu = 1 like every other mu (no thick black line)")
     p.add_argument("--ss-min-entries", type=int, default=20, metavar="N",
                    help="draw SS in the decomposition only with at least N "
                         "raw entries (default: %(default)s)")
@@ -459,6 +578,12 @@ def main(argv=None):
     power = split["weight_power"]
     label = args.label or Path(args.input).stem
     mus = sorted(set([0.0] + list(args.mu)))
+    if args.mu95:
+        for k, colour in zip((1, 10, 100), MU95_COLOURS):
+            mu = args.mu95 * k
+            name = args.mu95_label if k == 1 else f"{k} $\\times$ {args.mu95_label}"
+            MU95_NAMES[mu] = (f"{name} = {mu:.3g}", colour)
+        mus = sorted({0.0, 1.0, *MU95_NAMES})
     obs_list = args.obs or sorted(data)
     unknown = sorted(set(obs_list) - set(data))
     if unknown:
@@ -475,25 +600,44 @@ def main(argv=None):
         print("raw entries after event cuts: "
               + ", ".join(f"{t} {rc[t]['events']:,}" for t in TYPES))
     print(f"\n{'observable':<26} {'mu':>8} {'signal frac':>12} "
-          f"{'chi2/ndf vs mu=0':>18}")
+          f"{'dchi2/ndf':>18} {'Z_tmpl':>7} {'Z_gen':>7}")
 
     table = {}
     for obs in obs_list:
         res = scan_plot(obs, data[obs], mus, power, args.mu_scale, label,
-                        outdir / f"scan_{obs}.{args.format}", args.log)
-        table[obs] = {mu: {"frac": f, "chi2": c, "ndf": n}
-                      for mu, (f, c, n) in res.items()}
-        for mu, (f, c, n) in res.items():
+                        outdir / f"scan_{obs}.{args.format}", args.log,
+                        not args.no_highlight, args.xlim)
+        table[obs] = {mu: {"frac": f, "chi2": c, "ndf": n,
+                           "chi2_raw": raw, "chi2_signal_noise": nz,
+                           "z_template": float(np.sqrt(c)),
+                           "z_generic": z_generic(c, n)}
+                      for mu, (f, c, n, raw, nz) in res.items()}
+        for mu, (f, c, n, raw, nz) in res.items():
+            r = table[obs][mu]
             chi2_s = "-" if mu == 0 else f"{c:.1f}/{n}"
-            print(f"{obs:<26} {mu:>8g} {f:>12.3e} {chi2_s:>18}")
+            zg = "-" if mu == 0 or r["z_generic"] is None \
+                else f"{r['z_generic']:.1f}"
+            zt = "-" if mu == 0 else f"{r['z_template']:.1f}"
+            print(f"{obs:<26} {mu:>8g} {f:>12.3e} {chi2_s:>18} {zt:>7} {zg:>7}")
         decomp_plot(obs, data[obs], split, power, args.mu_scale, label,
                     outdir / f"decomp_{obs}.{args.format}",
                     args.ss_min_entries)
 
     summary_plots(table, label, outdir, args.format)
+    crossings = {}
+    print(f"\n{'observable':<26} {'mu at dchi2=4 (2 sigma)':>24} "
+          f"{'mu at dchi2=25 (5 sigma)':>25}")
+    for obs in obs_list:
+        mus_sorted = sorted(m for m in table[obs] if m > 0)
+        dc = [table[obs][m]["chi2"] for m in mus_sorted]
+        c2, c5 = (mu_crossing(mus_sorted, dc, lv) for lv, _ in DCHI2_LINES)
+        crossings[obs] = {"mu_2sigma": c2, "mu_5sigma": c5}
+        fmt_mu = lambda v: "-" if v is None else f"{v:.3g}"
+        print(f"{obs:<26} {fmt_mu(c2):>24} {fmt_mu(c5):>25}")
     with open(outdir / "scan_table.json", "w") as f:
         json.dump({"label": label, "mu_scale": args.mu_scale,
                    "weight_power": power,
+                   "crossings": crossings,
                    "table": {o: {f"{mu:g}": r for mu, r in t.items()}
                              for o, t in table.items()}}, f, indent=1)
 
@@ -504,7 +648,8 @@ def main(argv=None):
         for obs in obs_list:
             if obs in other:
                 sqcompare_plot(obs, data[obs], other[obs], label, olabel,
-                               outdir / f"sqcompare_{obs}.{args.format}")
+                               outdir / f"sqcompare_{obs}.{args.format}",
+                               args.log)
     if args.reference:
         ref = load_reference(args.reference)
         if args.rebin > 1:

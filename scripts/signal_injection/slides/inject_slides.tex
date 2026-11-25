@@ -1,0 +1,187 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ---------------------------------------------------------------------------
+%  Signal injection into hemisphere mixing - walkthrough of the 2026-11-23 plots
+%  Plots: ../plots/<study>/ (scripts/plot_injection_scan.py, analyzer a1d204a)
+%  Compile:  latexmk -pdf inject_slides.tex
+% ---------------------------------------------------------------------------
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\graphicspath{{../plots/}}
+
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\useinnertheme{circles}
+
+\definecolor{cmsBlue}{RGB}{0,71,133}
+\definecolor{accent}{RGB}{214,96,29}
+\definecolor{softgray}{RGB}{120,120,120}
+
+\setbeamercolor{frametitle}{fg=cmsBlue}
+\setbeamercolor{title}{fg=cmsBlue}
+\setbeamercolor{structure}{fg=cmsBlue}
+\setbeamercolor{itemize item}{fg=accent}
+\setbeamerfont{frametitle}{series=\bfseries}
+\setbeamertemplate{frametitle}{%
+  \vspace{0.6em}\insertframetitle\par
+  {\color{accent}\rule{\textwidth}{1.2pt}}\par}
+\setbeamertemplate{footline}{%
+  \hfill{\color{softgray}\scriptsize\insertframenumber/\inserttotalframenumber}\hspace{1em}\vspace{0.5em}}
+
+% one-line caption under the plots
+\newcommand{\plotnote}[1]{\vfill{\small #1}\par\vspace{0.4em}}
+
+\title{\textbf{Signal Injection into Hemisphere Mixing}}
+\subtitle{How much RPV signal in the mixing pool changes the mixed background?}
+\date{23 November 2026}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{The study}
+  \begin{itemize}
+    \item Exactly-5-jet RPV signal hemispheres were added to the QCD hemisphere
+          pool (HT-200to400 and up) and mixed exactly as normal. Each mixed
+          event is then QQ, SQ or SS by where its two halves came from.
+    \item Four studies: M300 and M1000, each $\times 1$ and $\times 4$ (every
+          signal hemisphere duplicated 4 times, so it gets more chances to be matched).
+    \item The pairing does not depend on weights, so a signal strength $\mu$ is
+          applied afterwards. With $\sqrt{w}$ filling:
+          \[ B(\mu) = \text{QQ} + \mu^{1/2}\,\text{SQ} + \mu\,\text{SS}, \]
+          and the $\times 4$ studies are run at $\mu/4$ so both match $\times 1$.
+    \item $\mu = 1$ is the nominal signal cross section. All plots: HT $>$ 550,
+          mass asymmetry $<$ 0.1, no pSignal cut.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Check: injection does not disturb the QCD pairs}
+  \vspace*{1.5em}\centering
+  \includegraphics[width=0.243\textwidth]{M300_x1/log/noninj_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M300_x4/log/noninj_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M1000_x1/log/noninj_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M1000_x4/log/noninj_mass_PairNetV0_9.pdf}
+  \plotnote{The QQ pairs of each study ($\mu = 0$) against the August mixed sample,
+    which used the same QCD index and match settings but no signal. Yields agree
+    within 0.5\% and $\chi^2$/ndf $\le 1$ everywhere, so adding signal leaves the
+    QCD part of the background unchanged.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Where the signal lands: M300 $\times 1$ at $\mu = 1$}
+  \centering
+  \includegraphics[width=0.43\textwidth]{M300_x1/decomp_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M300_x1/decomp_ht.pdf}
+  \plotnote{QQ and SQ pairs at their true weights, with the signal-pair fraction
+    per bin below; SS has no entries. About 1.5k SQ events (300 after the mass
+    selection) sit at 250--450 GeV in mass and just above the HT cut.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\mu$ scan, mass: M300 $\times 1$}
+  \centering
+  \includegraphics[width=0.42\textwidth]{M300_x1/log/scan_mass_PairNetV0_9.pdf}
+  \plotnote{Unit-area PairNetV0\_9 mass at each $\mu$, with the ratio to $\mu = 0$
+    below; the grey band is the $\mu = 0$ statistical error and $\mu = 1$ is in
+    black. Signal pairs push up the 300--500 GeV region. At $\mu = 1$ each bin moves by
+    less than its error, but the bins move together, which adds up (next slides).}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\mu$ scan, mass: all four PairNets, M300 $\times 1$}
+  \vspace*{1.5em}\centering
+  \includegraphics[width=0.243\textwidth]{M300_x1/log/scan_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M300_x1/log/scan_mass_PairnetV1.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M300_x1/log/scan_mass_PairNetInRepo.pdf}\hfill
+  \includegraphics[width=0.243\textwidth]{M300_x1/log/scan_mass_PairNetGivenByLarry.pdf}
+  \plotnote{The same scan for every PairNet. All four respond the same way, so the
+    result does not depend on which network picks the jet pairing.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\mu$ scan, kinematics: M300 $\times 1$}
+  \centering
+  \includegraphics[width=0.43\textwidth]{M300_x1/log/scan_ht.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M300_x1/log/scan_leadjet_pt.pdf}
+  \plotnote{HT and leading-jet $p_T$ made the same way. Signal adds events at low
+    HT and low $p_T$, so the tails fall relative to $\mu = 0$. With no mass cut these
+    histograms have $\sim$10$\times$ more events, so they detect a smaller shift.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{How large is the shift? M300 $\times 1$}
+  \centering
+  \includegraphics[width=0.41\textwidth]{M300_x1/summary_chi2.pdf}\hfill
+  \includegraphics[width=0.41\textwidth]{M300_x1/summary_sigfrac.pdf}
+  \plotnote{Left: $\Delta\chi^2$, the squared shift of each $\mu$ shape from $\mu = 0$
+    in units of the $\mu = 0$ statistical error, corrected for the signal sample's own
+    noise; dashed lines are $2\sigma$ and $5\sigma$ for a known-shape test. Right: the
+    signal-pair share of the weight. At $\mu = 1$ (0.5--1\% signal), $\Delta\chi^2 \approx
+    12$--21 in mass (3.5--4.5$\sigma$) and 60--78 in HT/$p_T$.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\times 4$: does more matching change the SQ pairs?}
+  \centering
+  \includegraphics[width=0.43\textwidth]{M300_x4/log/sqcompare_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M300_x4/log/sqcompare_ht.pdf}
+  \plotnote{Unit-area SQ shapes, M300 $\times 4$ against $\times 1$. The $\times 4$
+    study has 3.9$\times$ the SQ events (5.8k vs 1.5k), and the shapes agree within
+    statistics: extra chances to match do not change what the signal pairs look like.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\times 4$ reproduces $\times 1$: M300}
+  \centering
+  \includegraphics[width=0.41\textwidth]{M300_x1/summary_chi2.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M300_x4/summary_chi2.pdf}
+  \plotnote{$\Delta\chi^2$ against $\mu$ for $\times 1$ (left) and $\times 4$ at
+    $\mu/4$ (right). They agree up to $\mu = 100$; above that the few SS pairs in
+    $\times 4$, which grow as $\mu$, take over.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{M1000: where the signal lands and the $\mu$ scan}
+  \centering
+  \includegraphics[width=0.43\textwidth]{M1000_x1/decomp_mass_PairNetV0_9.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M1000_x1/log/scan_mass_PairNetV0_9.pdf}
+  \plotnote{The same plots for M1000 $\times 1$. Only 480 SQ events carry
+    $\sim$10$^{-5}$ of the weight at $\mu = 1$; the mass shape only moves visibly
+    at $\mu \gtrsim 100$.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{How large is the shift? M1000}
+  \centering
+  \includegraphics[width=0.43\textwidth]{M1000_x1/summary_chi2.pdf}\hfill
+  \includegraphics[width=0.43\textwidth]{M1000_x4/summary_chi2.pdf}
+  \plotnote{$\Delta\chi^2$ against $\mu$ for $\times 1$ (left) and $\times 4$ (right).
+    $\Delta\chi^2 < 1$ at $\mu = 1$; reaching $5\sigma$ takes $\mu \approx 30$--120,
+    so M1000 contamination is negligible.}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Summary}
+  \begin{itemize}
+    \item Adding signal does not change the QCD pairs: $\mu = 0$ matches the
+          non-injected sample.
+    \item M300 at its nominal cross section shifts the background by
+          3.5--4.5$\sigma$ in mass and $\sim$8$\sigma$ in HT/$p_T$ against the mixed-MC
+          statistics (known-shape test; a generic test sees 1--2$\sigma$ in mass).
+          M1000 needs $\mu \approx 30$--120 for $5\sigma$.
+          See the separate $\chi^2$ explainer.
+    \item Duplicating signal hemispheres changes neither the SQ shapes nor the
+          conclusions.
+    \item Caveats: correlated bins make these numbers optimistic, and the errors are
+          the mixed-MC statistics, not data's. Bootstrap, rescale to the data-driven
+          background's precision, and compare with the expected-limit $\mu$.
+  \end{itemize}
+\end{frame}
+
+\end{document}

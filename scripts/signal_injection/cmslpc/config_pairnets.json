@@ -1,0 +1,35 @@
+{
+    "metadata": {
+        "version": "v1-pairnets-only"
+    },
+    "models": [
+        {
+            "type": "comb_solver",
+            "path": "models/pairnet_gated_7jet_mass_073b06e.onnx",
+            "label": "PairNetV0.9",
+            "normalized": false,
+            "pairing_output": "logits"
+        },
+        {
+            "type": "comb_solver",
+            "path": "models/pairnet_gated_12jet_win5_lowmass_boost_r14A_prelim.onnx",
+            "label": "PairNetGivenByLarry",
+            "normalized": false,
+            "pairing_output": "logits"
+        },
+        {
+            "type": "comb_solver",
+            "path": "models/pairnet_gated_12jet_win5_f1d279f.onnx",
+            "label": "PairNetInRepo",
+            "normalized": false,
+            "pairing_output": "logits"
+        },
+        {
+            "type": "comb_solver",
+            "path": "models/pairnet_gated_12jet_win5_lowmass_boost_r14A.onnx",
+            "label": "PairnetV1",
+            "normalized": false,
+            "pairing_output": "logits"
+        }
+    ]
+}

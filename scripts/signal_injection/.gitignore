@@ -1,0 +1,15 @@
+# build products: rerun build_slides.sh to regenerate
+plots
+slides/**/*.pdf
+slides/**/*.aux
+slides/**/*.fdb_latexmk
+slides/**/*.fls
+slides/**/*.log
+slides/**/*.nav
+slides/**/*.out
+slides/**/*.snm
+slides/**/*.toc
+slides/**/figs/
+slides/mu95_from_cms/snippets.tex
+slides/mu95_from_cms/excerpts/
+__pycache__/
